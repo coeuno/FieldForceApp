@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from scipy.spatial import ConvexHull
 import warnings
+import json
+import os
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
@@ -67,37 +69,26 @@ def classify_abc(df, volume_col, da_a, da_b, da_c):
     return df
 
 def compute_hull_coords(df_customers):
-    """Calcola le coordinate del perimetro esterno (Convex Hull) dei clienti di un venditore"""
     if len(df_customers) < 3:
         return None, None
-    
     try:
         pts = df_customers[['longitudine', 'latitudine']].values
         hull = ConvexHull(pts)
-        # Chiudiamo il poligono ripetendo il primo punto alla fine
         idx = np.append(hull.vertices, hull.vertices[0])
-        return pts[idx, 0], pts[idx, 1] # lon, lat
+        return pts[idx, 0], pts[idx, 1]
     except:
         return None, None
 
 def calculate_travel_km_aggregated(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day, tortuosity_dict):
-    """STEP 1: Modello Aggregato Density-Aware"""
     if len(df_customers) == 0:
         return 0.0
-
     custs = df_customers.copy()
-    dists = haversine_km(
-        custs['longitudine'].values, custs['latitudine'].values,
-        rep_home_lon, rep_home_lat
-    )
+    dists = haversine_km(custs['longitudine'].values, custs['latitudine'].values, rep_home_lon, rep_home_lat)
     custs['dist_from_home'] = dists
-    
     total_visits = custs['freq_visite'].sum()
     if total_visits == 0:
         return 0.0
-        
     dist_media_ponderata = (custs['dist_from_home'] * custs['freq_visite']).sum() / total_visits
-    
     n_province = custs['sigla'].nunique()
     if n_province <= 1:
         fattore_dispersione = 1.00
@@ -105,10 +96,8 @@ def calculate_travel_km_aggregated(df_customers, rep_home_lat, rep_home_lon, max
         fattore_dispersione = 1.15
     else:
         fattore_dispersione = 1.30
-        
     efficienza = max(0.85, 1.00 - (0.03 * (max_stops_per_day - 5)))
     avg_tort = custs['sigla'].map(tortuosity_dict).fillna(1.25).mean()
-    
     km_annui = total_visits * dist_media_ponderata * 2.0 * avg_tort * fattore_dispersione / efficienza
     return km_annui
 
@@ -137,29 +126,23 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
 
-    # --- ASSEGNAZIONE CLIENTI ---
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
         valid_rep_names = df_v_valid['sales rep'].values
-
         dist_matrix = np.zeros((len(c_lats), len(v_lons)))
         for j in range(len(v_lons)):
             dist_matrix[:, j] = haversine_km(c_lons, c_lats, v_lons[j], v_lats[j])
-
         idx_min = np.argmin(dist_matrix, axis=1)
         min_dists = np.min(dist_matrix, axis=1)
-
         df_w['assigned_rep'] = valid_rep_names[idx_min]
         df_w['dist_km'] = min_dists
         df_w['assegnazione'] = 'nearest_neighbor'
     else:
         if 'sales rep' not in df_w.columns:
             return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
-
         df_w['assigned_rep'] = df_w['sales rep']
         df_w = df_w[df_w['assigned_rep'].isin(active_list)].copy()
-
         df_w = df_w.merge(
             df_v_valid[['sales rep', 'latitudine', 'longitudine']].rename(
                 columns={'latitudine': 'rep_lat', 'longitudine': 'rep_lon', 'sales rep': 'assigned_rep'}
@@ -180,18 +163,13 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
 
-    # --- CALCOLO VIAGGI (MODELLO AGGREGATO) ---
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
         if len(sub) > 0:
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
-            
-            km_totali = calculate_travel_km_aggregated(
-                sub, rep_lat, rep_lon, max_stops_per_day, PROVINCIAL_TORTUOSITY
-            )
-            
+            km_totali = calculate_travel_km_aggregated(sub, rep_lat, rep_lon, max_stops_per_day, PROVINCIAL_TORTUOSITY)
             ore_viag = km_totali / vel_media
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
         else:
@@ -213,29 +191,21 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     max_ore_campo = ore_gg * gg_lavoro
     agg['ore_totali_annue'] = agg['ore_visite_annue'] + agg['ore_viaggio_annue']
-
-    agg['saturazione_pct'] = np.where(
-        max_ore_campo > 0,
-        (agg['ore_totali_annue'] / max_ore_campo) * 100,
-        0.0
-    )
+    agg['saturazione_pct'] = np.where(max_ore_campo > 0, (agg['ore_totali_annue'] / max_ore_campo) * 100, 0.0)
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
 
     def get_alert(s):
         if s > 110: return "🔴 CRITICO"
         elif s > 100: return "🟠 OVERLOAD"
-        elif s > 85: return "️ ATTENZIONE"
+        elif s > 85: return " ATTENZIONE"
         else: return "🟢 OK"
 
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
-
     all_reps = pd.DataFrame({'sales_rep': active_list})
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
     result = result.sort_values('saturazione_pct', ascending=False)
-
     return result, df_w
-
 
 # =============================================================================
 # INTERFACCIA
@@ -268,8 +238,27 @@ def main():
         st.subheader("📁 Dati di Input")
         uploaded = st.file_uploader("Carica Excel (Clienti + Venditori)", type=['xlsx'])
 
+        # UPLOADER GEOJSON - Una volta caricato resta in cache
+        st.subheader("🗺️ Confini Province (Opzionale)")
+        uploaded_geojson = st.file_uploader("GeoJSON Province Italia", type=['geojson'], 
+                                           help="Carica una volta sola. Il file viene memorizzato.")
+        
+        if uploaded_geojson is not None:
+            if 'geojson_italy' not in st.session_state:
+                try:
+                    geojson_data = json.load(uploaded_geojson)
+                    st.session_state.geojson_italy = geojson_data
+                    st.success("✅ GeoJSON caricato e salvato!")
+                except Exception as e:
+                    st.error(f"❌ Errore GeoJSON: {e}")
+                    st.session_state.geojson_italy = None
+        elif 'geojson_italy' in st.session_state:
+            st.success("✅ GeoJSON già caricato")
+        else:
+            st.caption("💡 Senza GeoJSON: poligoni approssimativi")
+
         if not uploaded:
-            st.info(" Carica il file per iniziare")
+            st.info("👆 Carica il file Excel per iniziare")
             return
 
         file_signature = f"{uploaded.name}_{uploaded.size}"
@@ -314,32 +303,23 @@ def main():
         st.divider()
 
         st.subheader("🎮 Modalità")
-        modo = st.radio(
-            "Scegli modalità:",
-            ["📍 Mappa Attuale (Assegnazione Reale)", "🔄 Simula Downsizing (Nearest Neighbor)"],
-            index=0
-        )
+        modo = st.radio("Scegli modalità:",
+            ["📍 Mappa Attuale (Assegnazione Reale)", "🔄 Simula Downsizing (Nearest Neighbor)"], index=0)
         use_nn = (modo == "🔄 Simula Downsizing (Nearest Neighbor)")
         st.divider()
 
         st.subheader("⚙️ Parametri Simulazione")
-
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
-        gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
-        
-        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5,
-                                 help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
-        
+        gg_lavoro = st.number_input("📅 Giorni lavorativi/anno", 180, 260, 220, step=5)
+        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
-        st.caption(f"*Capacità annua effettiva: {ore_effettive_gg * gg_lavoro:,.0f} ore (dopo pausa)*")
-
-        vel_media = st.slider("🚗 Velocità media effettiva (km/h)", 40, 100, 65, step=5)
-        max_stops_per_day = st.slider("📦 Max visite/giorno (leva efficienza)", 3, 10, 5, step=1,
-                                      help="Più visite/giorno → routing più ottimizzato → meno km/anno")
+        st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
+        vel_media = st.slider("🚗 Velocità media (km/h)", 40, 100, 65, step=5)
+        max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
 
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
@@ -347,41 +327,50 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
     # =============================================================================
-    # MATRICE ABC
+    # MATRICE ABC COMPLETA
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie e visite direttamente nei campi sotto.")
+    st.caption("Definisci soglie (da/a) e visite. 'a' = -1 significa infinito.")
 
-    if 'abc_values' not in st.session_state:
-        st.session_state.abc_values = {
-            'da_a': 801, 'a_a': -1, 'freq_a': 24,
-            'da_b': 301, 'a_b': 800, 'freq_b': 12,
-            'da_c': 10, 'a_c': 300, 'freq_c': 3,
-            'da_na': 0, 'a_na': 9, 'freq_na': 0
-        }
+    if 'abc_matrix' not in st.session_state:
+        st.session_state.abc_matrix = pd.DataFrame({
+            'da': [801, 301, 10, 0],
+            'a': [-1, 800, 300, 9],
+            'Categoria': ['A', 'B', 'C', 'Non Attivi'],
+            'Visite anno': [24, 12, 3, 0]
+        })
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.markdown("**🟢 Classe A**")
-        da_a = st.number_input("da ≥", key="da_a", value=st.session_state.abc_values['da_a'], min_value=0, step=1)
-        freq_a = st.number_input("Visite/anno", key="freq_a", value=st.session_state.abc_values['freq_a'], min_value=0, step=1)
-    with col2:
-        st.markdown("**🟡 Classe B**")
-        da_b = st.number_input("da ≥", key="da_b", value=st.session_state.abc_values['da_b'], min_value=0, step=1)
-        freq_b = st.number_input("Visite/anno", key="freq_b", value=st.session_state.abc_values['freq_b'], min_value=0, step=1)
-    with col3:
-        st.markdown("**🔴 Classe C**")
-        da_c = st.number_input("da ≥", key="da_c", value=st.session_state.abc_values['da_c'], min_value=0, step=1)
-        freq_c = st.number_input("Visite/anno", key="freq_c", value=st.session_state.abc_values['freq_c'], min_value=0, step=1)
-    with col4:
-        st.markdown("**🔵 Non Attivi**")
-        da_na = st.number_input("da ≥", key="da_na", value=st.session_state.abc_values['da_na'], min_value=0, step=1)
-        freq_na = st.number_input("Visite/anno", key="freq_na", value=st.session_state.abc_values['freq_na'], min_value=0, step=1)
+    edited_matrix = st.data_editor(
+        st.session_state.abc_matrix,
+        column_config={
+            'da': st.column_config.NumberColumn('da ≥', min_value=0, step=1, format="%d"),
+            'a': st.column_config.NumberColumn('a <', min_value=-1, step=1, format="%d"),
+            'Categoria': st.column_config.TextColumn('Categoria', disabled=True),
+            'Visite anno': st.column_config.NumberColumn('Visite/anno', min_value=0, step=1, format="%d"),
+        },
+        hide_index=True,
+        use_container_width=False,
+        key="abc_matrix_editor_v2",
+        num_rows="fixed",
+        disabled=["Categoria"]
+    )
 
-    st.session_state.abc_values = {'da_a': da_a, 'a_a': -1, 'freq_a': freq_a, 'da_b': da_b, 'a_b': 9999, 'freq_b': freq_b, 'da_c': da_c, 'a_c': 9999, 'freq_c': freq_c, 'da_na': da_na, 'a_na': 9999, 'freq_na': freq_na}
-    min_vol = da_c
+    if not edited_matrix.equals(st.session_state.abc_matrix):
+        st.session_state.abc_matrix = edited_matrix.copy()
 
-    # Preview distribuzione clienti
+    try:
+        edited_matrix_sorted = edited_matrix.sort_values('Categoria').reset_index(drop=True)
+        da_a = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'A', 'da'].values[0]))
+        da_b = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'B', 'da'].values[0]))
+        da_c = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'C', 'da'].values[0]))
+        freq_a = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'A', 'Visite anno'].values[0]))
+        freq_b = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'B', 'Visite anno'].values[0]))
+        freq_c = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'C', 'Visite anno'].values[0]))
+        min_vol = da_c
+    except:
+        da_a, da_b, da_c, freq_a, freq_b, freq_c, min_vol = 801, 301, 10, 24, 12, 3, 10
+
+    # Preview
     if uploaded:
         try:
             df_preview = df_c.copy()
@@ -389,27 +378,17 @@ def main():
             df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
             dist = df_preview['classe'].value_counts()
             total = len(df_preview)
-            total_attivi = len(df_preview[df_preview['classe'] != 'Non Attivo'])
-
+            
             col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
             with col_prev1:
-                n_a = dist.get('A', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #ff4b4b; font-size: 24px;'>●</span><br><b>Classe A</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold;'>{fmt_eu(n_a, 0)}</div>", unsafe_allow_html=True)
+                st.metric(f"🟢 Classe A (≥{fmt_eu(da_a)})", f"{fmt_eu(dist.get('A', 0))}")
             with col_prev2:
-                n_b = dist.get('B', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #ffa500; font-size: 24px;'>●</span><br><b>Classe B</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold;'>{fmt_eu(n_b, 0)}</div>", unsafe_allow_html=True)
+                st.metric(f"🟡 Classe B", f"{fmt_eu(dist.get('B', 0))}")
             with col_prev3:
-                n_c = dist.get('C', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #0088ff; font-size: 24px;'>●</span><br><b>Classe C</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold;'>{fmt_eu(n_c, 0)}</div>", unsafe_allow_html=True)
+                st.metric(f"🔴 Classe C", f"{fmt_eu(dist.get('C', 0))}")
             with col_prev4:
-                n_na = dist.get('Non Attivo', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #888888; font-size: 24px;'>●</span><br><b>Non Attivi</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold;'>{fmt_eu(n_na, 0)}</div>", unsafe_allow_html=True)
-
-        except Exception: pass
+                st.metric(f"🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
+        except: pass
 
     # =============================================================================
     # STATO SESSIONE & LOGICA
@@ -430,13 +409,11 @@ def main():
             try:
                 active_list = [r for r, s in rep_status.items() if s]
                 if len(active_list) == 0:
-                    st.error("️ Seleziona almeno un venditore")
+                    st.error("⚠️ Seleziona almeno un venditore")
                 else:
-                    res, df_w = run_simulation(
-                        df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
+                    res, df_w = run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                         freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
-                        max_stops_per_day, use_nearest_neighbor=use_nn
-                    )
+                        max_stops_per_day, use_nearest_neighbor=use_nn)
                     if res is None: st.error(df_w)
                     else:
                         st.session_state.current_result = res
@@ -450,7 +427,7 @@ def main():
                         st.session_state.current_df_v = df_v
                         st.success(f"✅ Calcolo completato! Modello aggregato attivo.")
             except Exception as e:
-                st.error(f"❌ Errore calcolo: {e}")
+                st.error(f"❌ Errore: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
@@ -466,42 +443,59 @@ def main():
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']), 0)}</div></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']))}</div></div>", unsafe_allow_html=True)
         with col2:
             total_customers = int(res['n_clienti'].sum())
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti (Righe)</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers, 0)}</div></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers)}</div></div>", unsafe_allow_html=True)
         with col3:
             avg_sat = res['saturazione_pct'].mean()
             st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", unsafe_allow_html=True)
         with col4:
             overload = len(res[res['saturazione_pct'] > 100])
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload, 0)}</div></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
 
-        st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c), 0)}**")
+        st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c))}**")
 
-        # --- SALVATAGGIO SCENARI ---
+        # SALVATAGGIO SCENARI
         col_btn, col_name = st.columns([2, 1])
         with col_btn:
-            if st.button("💾 Salva come Baseline (Attuale)", use_container_width=True):
-                st.session_state.scenarios["📍 BASELINE (Attuale)"] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
+            if st.button("💾 Salva come Baseline", use_container_width=True):
+                st.session_state.scenarios["📍 BASELINE"] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
                 st.success("✅ Baseline salvata!")
         with col_name:
-            nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
-            if st.button("💾 Salva Scenario", use_container_width=True) and nome_scen:
+            nome_scen = st.text_input("Nome scenario", placeholder="Es. 19 Agenti")
+            if st.button("💾 Salva", use_container_width=True) and nome_scen:
                 st.session_state.scenarios[nome_scen] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
                 st.success(f"✅ '{nome_scen}' salvato!")
 
-        # --- TABELLA DETTAGLIO ---
+        # CONFRONTO SCENARI
+        if len(st.session_state.scenarios) >= 2:
+            st.divider()
+            st.subheader("📊 Confronto Scenari")
+            sel = st.selectbox("Confronta", list(st.session_state.scenarios.keys())[1:])
+            base = st.session_state.scenarios["📍 BASELINE"]
+            other = st.session_state.scenarios[sel]
+            
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                delta = len(other['result']) - len(base['result'])
+                st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", f"{delta:+d}")
+            with c2:
+                st.metric("Clienti", f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
+            with c3:
+                st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
+
+        # TABELLA DETTAGLIO
         st.divider()
-        st.subheader(" Dettaglio Scenario Corrente")
+        st.subheader("📋 Dettaglio Scenario")
         disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c',
                     'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
                     'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
-        disp.columns = ['Venditore', 'Stato', 'Clienti (Righe)', 'Clienti Unici', 'A', 'B', 'C', 'Volume',
+        disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
 
         disp_fmt = disp.copy()
-        for col in ['Clienti (Righe)', 'Clienti Unici', 'A', 'B', 'C', 'Volume']:
+        for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
         for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
@@ -523,127 +517,93 @@ def main():
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # =============================================================================
-        # MAPPA (VERSIONE GEOMETRICA / POLIGONI TRASPARENTI + ZOOM ITALIA)
+        # MAPPA CON/Senza GEOJSON
         # =============================================================================
-        st.subheader("🗺️ Mappa Zone e Distribuzione Clienti")
+        st.divider()
+        st.subheader("🗺️ Mappa Territori")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
 
         if len(df_map) == 0:
-            st.warning("⚠️ Nessun cliente valido da visualizzare sulla mappa.")
+            st.warning("⚠️ Nessun cliente da visualizzare")
         else:
-            st.caption(f"Visualizzati {fmt_eu(len(df_map), 0)} clienti")
+            st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti")
             
-            # 1. Disegna i POLIGONI (Zone dei venditori)
-            fig = go.Figure()
-            
-            # Mappa colori per venditori (palette qualitativa)
-            colors = px.colors.qualitative.Alphabet
-            rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(params['active_list'])}
-
-            for rep in params['active_list']:
-                sub = df_map[df_map['assigned_rep'] == rep]
-                if len(sub) >= 3:
-                    lon_h, lat_h = compute_hull_coords(sub)
-                    if lon_h is not None:
-                        # Poligono trasparente (opacity 0.15)
+            if st.session_state.get('geojson_italy'):
+                # MAPPA CON GEOJSON - Confini province reali
+                st.info("🗺️ Visualizzazione con confini provincia reali")
+                
+                df_prov = df_map.groupby(['sigla', 'assigned_rep']).size().reset_index(name='n_clienti')
+                
+                fig = px.choropleth_mapbox(
+                    df_prov,
+                    geojson=st.session_state.geojson_italy,
+                    locations='sigla',
+                    color='assigned_rep',
+                    color_discrete_sequence=px.colors.qualitative.Alphabet,
+                    mapbox_style="carto-positron",
+                    zoom=5.5,
+                    center={"lat": 42.5, "lon": 12.5},
+                    opacity=0.5
+                )
+                
+                # Aggiungi punti clienti
+                for classe, color, size in [('A', 'red', 6), ('B', 'orange', 5), ('C', 'blue', 4)]:
+                    df_c = df_map[df_map['classe'] == classe]
+                    if len(df_c) > 0:
                         fig.add_trace(go.Scattermapbox(
-                            mode='lines',
-                            lon=lon_h,
-                            lat=lat_h,
-                            line=dict(width=1, color=rep_colors[rep]),
-                            fill='toself',
-                            fillcolor=rep_colors[rep],
-                            opacity=0.15,  # ️ ALTA TRASPARENZA
-                            name=f"Zona {rep}",
-                            showlegend=True,
-                            hoverinfo='name'
+                            lat=df_c['latitudine'], lon=df_c['longitudine'],
+                            mode='markers', marker=dict(size=size, color=color),
+                            name=f"Classe {classe}"
+                        ))
+                
+            else:
+                # MAPPA SENZA GEOJSON - Poligoni approssimativi
+                fig = go.Figure()
+                colors = px.colors.qualitative.Alphabet
+                rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(params['active_list'])}
+
+                for rep in params['active_list']:
+                    sub = df_map[df_map['assigned_rep'] == rep]
+                    if len(sub) >= 3:
+                        lon_h, lat_h = compute_hull_coords(sub)
+                        if lon_h is not None:
+                            fig.add_trace(go.Scattermapbox(
+                                mode='lines', lon=lon_h, lat=lat_h,
+                                line=dict(width=1, color=rep_colors[rep]),
+                                fill='toself', fillcolor=rep_colors[rep],
+                                opacity=0.15, name=f"Zona {rep}"
+                            ))
+
+                for classe, color, size in [('A', 'red', 6), ('B', 'orange', 5), ('C', 'blue', 4)]:
+                    df_c = df_map[df_map['classe'] == classe]
+                    if len(df_c) > 0:
+                        fig.add_trace(go.Scattermapbox(
+                            lat=df_c['latitudine'], lon=df_c['longitudine'],
+                            mode='markers', marker=dict(size=size, color=color),
+                            name=f"Classe {classe}"
                         ))
 
-            # 2. Aggiungi i PUNTINI (Clienti) con 3 colori (A, B, C)
-            # Mappatura colori fissa per classe
-            classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0000ff'}
-            
-            # Traccia per Classe A
-            df_a = df_map[df_map['classe'] == 'A']
-            if len(df_a) > 0:
-                fig.add_trace(go.Scattermapbox(
-                    lat=df_a['latitudine'], lon=df_a['longitudine'],
-                    mode='markers', marker=dict(size=6, color=classe_colors['A']),
-                    name='Classe A', hoverinfo='name+text',
-                    text=df_a['assigned_rep'], showlegend=True
-                ))
-            
-            # Traccia per Classe B
-            df_b = df_map[df_map['classe'] == 'B']
-            if len(df_b) > 0:
-                fig.add_trace(go.Scattermapbox(
-                    lat=df_b['latitudine'], lon=df_b['longitudine'],
-                    mode='markers', marker=dict(size=5, color=classe_colors['B']),
-                    name='Classe B', hoverinfo='name+text',
-                    text=df_b['assigned_rep'], showlegend=True
-                ))
-
-            # Traccia per Classe C
-            df_c_map = df_map[df_map['classe'] == 'C']
-            if len(df_c_map) > 0:
-                fig.add_trace(go.Scattermapbox(
-                    lat=df_c_map['latitudine'], lon=df_c_map['longitudine'],
-                    mode='markers', marker=dict(size=4, color=classe_colors['C']),
-                    name='Classe C', hoverinfo='name+text',
-                    text=df_c_map['assigned_rep'], showlegend=True
-                ))
-
-            # 3. Aggiungi Home Base (Stelle)
-            df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
-                subset=['latitudine', 'longitudine']
-            )
-            if len(df_v_active) > 0:
-                fig.add_trace(go.Scattermapbox(
-                    lat=df_v_active['latitudine'],
-                    lon=df_v_active['longitudine'],
-                    mode='markers',
-                    marker=dict(size=14, symbol='star', color='black'),
-                    name='🏠 Home Base',
-                    showlegend=True,
-                    hoverinfo='name'
-                ))
-
-            # Layout con Legenda in basso e ZOOM ITALIA
             fig.update_layout(
-                mapbox_style="open-street-map",
-                mapbox_zoom=5.5,  # ⬅️ ZOOM PRE-IMPOSTATO ITALIA
-                mapbox_center=dict(lat=42.5, lon=12.5), # ⬅️ CENTRO ITALIA
-                margin=dict(r=0, t=30, l=0, b=100),  # Spazio extra sotto per la legenda
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=-0.15,   # Sposta la legenda sotto la mappa
-                    xanchor="center",
-                    x=0.5,
-                    bgcolor='rgba(255,255,255,0.9)'
-                ),
-                height=600
+                mapbox_style="open-street-map" if not st.session_state.get('geojson_italy') else "carto-positron",
+                mapbox_zoom=5.5,
+                mapbox_center=dict(lat=42.5, lon=12.5),
+                margin=dict(r=0, t=30, l=0, b=100),
+                height=600,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+                           bgcolor='rgba(255,255,255,0.9)')
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- EXPORT ---
+        # EXPORT
         st.divider()
         st.subheader("💾 Export Dati")
         export_df = res.copy()
         export_df['timestamp'] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
-        export_df['modalita'] = params['modo']
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
-        st.download_button(
-            " Scarica Report CSV",
-            csv,
-            f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv",
-            use_container_width=True
-        )
+        st.download_button("📥 Scarica CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
 
     else:
-        st.info("👈 Carica il file Excel nella sidebar e clicca ' Lancia Simulazione' per iniziare.")
-
+        st.info("👈 Carica Excel e clicca '🚀 Lancia Simulazione'")
 
 if __name__ == "__main__":
     main()
