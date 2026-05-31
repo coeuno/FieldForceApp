@@ -10,6 +10,27 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
 
 # =============================================================================
+# HELPER: FORMATTAZIONE EUROPEA NUMERI
+# =============================================================================
+def fmt_eu(value, decimals=0, suffix='', prefix=''):
+    """
+    Formatta un numero con separatore migliaia europeo (.) e decimale (,)
+    Esempio: 1234567.89 → '1.234.567,89'
+    """
+    if pd.isna(value):
+        return ''
+    try:
+        num = float(value)
+        if decimals == 0:
+            formatted = f"{num:,.0f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        else:
+            formatted = f"{num:,.{decimals}f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        return f"{prefix}{formatted}{suffix}"
+    except:
+        return str(value)
+
+
+# =============================================================================
 # CONFIGURAZIONE
 # =============================================================================
 PROVINCIAL_TORTUOSITY = {
@@ -211,6 +232,31 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # INTERFACCIA
 # =============================================================================
 def main():
+    # =============================================================================
+    # CSS PERSONALIZZATO: CENTRO + SEPARATORI EUROPEI
+    # =============================================================================
+    st.markdown("""
+    <style>
+        /* Allinea tutto il testo nelle tabelle al centro */
+        .dataframe td, .dataframe th {
+            text-align: center !important;
+            vertical-align: middle !important;
+        }
+        /* Allinea anche i numeri nei metric */
+        [data-testid="stMetricValue"] {
+            text-align: center !important;
+        }
+        /* Migliora leggibilità tabelle */
+        .dataframe {
+            font-size: 0.9rem !important;
+        }
+        /* Migliora l'editor dati */
+        .stDataFrame table td {
+            text-align: center !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.title("🎯 Field Force Downsizing Simulator")
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
 
@@ -296,13 +342,12 @@ def main():
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
 
     # =============================================================================
-    # MATRICE ABC - SOLO NUMERI, TUTTO EDITABILE
+    # MATRICE ABC - VERSIONE STABLE & RESPONSIVE
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
     st.caption("Modifica soglie (da/a) e visite. 'a' = -1 significa 'Max' (infinito). I clienti sotto la soglia C sono 'Non Attivi'.")
 
-    expected_cols = ['da', 'a', 'Categoria', 'Visite anno']
-
+    # Inizializzazione UNA SOLA volta
     if 'abc_matrix' not in st.session_state:
         st.session_state.abc_matrix = pd.DataFrame({
             'da': [801, 301, 10, 0],
@@ -310,50 +355,61 @@ def main():
             'Categoria': ['A', 'B', 'C', 'Non Attivi'],
             'Visite anno': [24, 12, 3, 0]
         })
-    else:
-        existing_cols = list(st.session_state.abc_matrix.columns)
-        if existing_cols != expected_cols or len(st.session_state.abc_matrix) != 4:
-            st.session_state.abc_matrix = pd.DataFrame({
-                'da': [801, 301, 10, 0],
-                'a': [-1, 800, 300, 9],
-                'Categoria': ['A', 'B', 'C', 'Non Attivi'],
-                'Visite anno': [24, 12, 3, 0]
-            })
 
-    # TUTTE colonne numeriche per evitare problemi di editing testo
+    # Forza aggiornamento solo se la struttura è corrotta
+    expected_cols = ['da', 'a', 'Categoria', 'Visite anno']
+    if list(st.session_state.abc_matrix.columns) != expected_cols or len(st.session_state.abc_matrix) != 4:
+        st.session_state.abc_matrix = pd.DataFrame({
+            'da': [801, 301, 10, 0],
+            'a': [-1, 800, 300, 9],
+            'Categoria': ['A', 'B', 'C', 'Non Attivi'],
+            'Visite anno': [24, 12, 3, 0]
+        })
+
+    # Editor con configurazione ottimizzata
     edited_matrix = st.data_editor(
         st.session_state.abc_matrix,
         column_config={
             'da': st.column_config.NumberColumn(
-                label='da ≥',
-                step=1, 
+                'da ≥',
+                help="Soglia minima inclusiva",
                 min_value=0,
-                help="Soglia minima inclusiva"
+                step=1,
+                format="%d",
+                width="small"
             ),
             'a': st.column_config.NumberColumn(
-                label='a <',
-                step=1, 
+                'a <',
+                help="-1 = Max (nessun limite superiore)",
                 min_value=-1,
-                help="-1 = Max (nessun limite superiore)"
+                step=1,
+                format="%d",
+                width="small"
             ),
             'Categoria': st.column_config.TextColumn(
-                label='Categoria',
-                disabled=True
+                'Categoria',
+                disabled=True,
+                width="medium"
             ),
             'Visite anno': st.column_config.NumberColumn(
-                label='Visite/anno',
-                step=1, 
+                'Visite/anno',
+                help="0 = non visitato",
                 min_value=0,
-                help="0 = non visitato"
-            )
+                step=1,
+                format="%d",
+                width="small"
+            ),
         },
         hide_index=True,
         use_container_width=True,
-        key="matrice_abc_v4",
-        num_rows="fixed"
+        key="abc_matrix_editor",
+        num_rows="fixed",
+        disabled=["Categoria"]
     )
 
-    st.session_state.abc_matrix = edited_matrix.copy()
+    # Aggiorna session state SOLO se ci sono modifiche effettive
+    if not edited_matrix.equals(st.session_state.abc_matrix):
+        st.session_state.abc_matrix = edited_matrix.copy()
 
     # Estrazione parametri
     try:
@@ -378,7 +434,7 @@ def main():
         freq_a, freq_b, freq_c = 24, 12, 3
         min_vol = da_c
 
-    # Preview distribuzione clienti con COLORI INVERTITI
+    # Preview distribuzione clienti
     if uploaded:
         try:
             df_preview = df_c.copy()
@@ -391,18 +447,18 @@ def main():
             col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
             with col_prev1:
                 n_a = dist.get('A', 0)
-                st.metric(f"🟢 Classe A (≥{da_a:,})", f"{n_a:,}", f"{n_a/total*100:.1f}%")
+                st.metric(f"🟢 Classe A (≥{fmt_eu(da_a, 0)})", f"{fmt_eu(n_a, 0)}", f"{n_a/total*100:.1f}%")
             with col_prev2:
                 n_b = dist.get('B', 0)
-                st.metric(f"🟡 Classe B ({da_b:,}-{da_a-1:,})", f"{n_b:,}", f"{n_b/total*100:.1f}%")
+                st.metric(f"🟡 Classe B ({fmt_eu(da_b, 0)}-{fmt_eu(da_a-1, 0)})", f"{fmt_eu(n_b, 0)}", f"{n_b/total*100:.1f}%")
             with col_prev3:
                 n_c = dist.get('C', 0)
-                st.metric(f"🔴 Classe C ({da_c:,}-{da_b-1:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
+                st.metric(f"🔴 Classe C ({fmt_eu(da_c, 0)}-{fmt_eu(da_b-1, 0)})", f"{fmt_eu(n_c, 0)}", f"{n_c/total*100:.1f}%")
             with col_prev4:
                 n_na = dist.get('Non Attivo', 0)
-                st.metric(f"🔵 Non Attivi (<{da_c:,})", f"{n_na:,}", f"{n_na/total*100:.1f}%")
+                st.metric(f"🔵 Non Attivi (<{fmt_eu(da_c, 0)})", f"{fmt_eu(n_na, 0)}", f"{n_na/total*100:.1f}%")
 
-            st.caption(f"📊 Clienti attivi (A+B+C): **{total_attivi:,}** su {total:,} totali ({total_attivi/total*100:.1f}%)")
+            st.caption(f"📊 Clienti attivi (A+B+C): **{fmt_eu(total_attivi, 0)}** su {fmt_eu(total, 0)} totali ({total_attivi/total*100:.1f}%)")
         except Exception as e:
             st.caption(f"Preview non disponibile: {e}")
 
@@ -459,7 +515,7 @@ def main():
                             'min_vol': min_vol
                         }
                         st.session_state.current_df_v = df_v
-                        st.success(f"✅ Simulazione completata! Clienti sotto {min_vol} esclusi (Non Attivi).")
+                        st.success(f"✅ Simulazione completata! Clienti sotto {fmt_eu(min_vol, 0)} esclusi (Non Attivi).")
             except Exception as e:
                 st.error(f"❌ Errore calcolo: {e}")
                 import traceback
@@ -478,18 +534,18 @@ def main():
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Venditori Attivi", len(params['active_list']))
+            st.metric("Venditori Attivi", fmt_eu(len(params['active_list']), 0))
         with col2:
             total_customers = int(res['n_clienti'].sum())
-            st.metric("Clienti Serviti (Righe)", f"{total_customers:,}")
+            st.metric("Clienti Serviti (Righe)", fmt_eu(total_customers, 0))
         with col3:
             avg_sat = res['saturazione_pct'].mean()
-            st.metric("Saturazione Media", f"{avg_sat:.1f}%")
+            st.metric("Saturazione Media", f"{avg_sat:.1f}%".replace('.', ','))
         with col4:
             overload = len(res[res['saturazione_pct'] > 100])
-            st.metric("Venditori Overload", overload, delta_color="inverse")
+            st.metric("Venditori Overload", fmt_eu(overload, 0), delta_color="inverse")
 
-        st.info(f"📍 Modalità: **{params['modo']}** | Soglia minima: **≥{params.get('min_vol', da_c)}** | " + 
+        st.info(f"📍 Modalità: **{params['modo']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c), 0)}** | " + 
                 ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata con Nearest Neighbor"))
 
         # --- SALVATAGGIO SCENARI ---
@@ -528,13 +584,13 @@ def main():
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         delta_v = len(other['result']) - len(base['result'])
-                        st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", delta=delta_v)
+                        st.metric("Venditori", f"{fmt_eu(len(base['result']), 0)} → {fmt_eu(len(other['result']), 0)}", delta=fmt_eu(delta_v, 0))
                     with c2:
                         st.metric("Clienti",
-                                  f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
+                                  f"{fmt_eu(int(base['result']['n_clienti'].sum()), 0)} → {fmt_eu(int(other['result']['n_clienti'].sum()), 0)}")
                     with c3:
                         st.metric("Sat. Media",
-                                  f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
+                                  f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%".replace('.', ','))
 
                     df_base = base['result'].set_index('sales_rep')
                     df_other = other['result'].set_index('sales_rep')
@@ -542,13 +598,18 @@ def main():
                         df_base[['saturazione_pct', 'n_clienti', 'ore_totali_annue']], fill_value=0
                     ).reset_index()
                     delta.columns = ['Venditore', 'Δ Saturazione %', 'Δ Clienti', 'Δ Ore Totali']
+                    
+                    # Formattazione europea per la tabella delta
+                    delta_fmt = delta.copy()
+                    delta_fmt['Δ Saturazione %'] = delta_fmt['Δ Saturazione %'].apply(lambda x: fmt_eu(x, 1, '%'))
+                    delta_fmt['Δ Clienti'] = delta_fmt['Δ Clienti'].apply(lambda x: fmt_eu(x, 0))
+                    delta_fmt['Δ Ore Totali'] = delta_fmt['Δ Ore Totali'].apply(lambda x: fmt_eu(x, 1))
+                    
                     st.dataframe(
-                        delta.style.format({
-                            'Δ Saturazione %': '{:+.1f}%',
-                            'Δ Clienti': '{:+.0f}',
-                            'Δ Ore Totali': '{:+.1f}'
-                        }).background_gradient(subset=['Δ Saturazione %'], cmap='RdYlGn_r'),
-                        use_container_width=True
+                        delta_fmt.style.set_properties(**{'text-align': 'center'})
+                        .background_gradient(subset=['Δ Saturazione %'], cmap='RdYlGn_r', vmin=-50, vmax=50),
+                        use_container_width=True,
+                        hide_index=True
                     )
 
         # --- TABELLA DETTAGLIO ---
@@ -561,11 +622,28 @@ def main():
         disp.columns = ['Venditore', 'Stato', 'Clienti (Righe)', 'Clienti Unici', 'A', 'B', 'C', 'Volume',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
 
+        # Applica formattazione europea alle colonne numeriche
+        disp_fmt = disp.copy()
+        disp_fmt['Clienti (Righe)'] = disp_fmt['Clienti (Righe)'].apply(lambda x: fmt_eu(x, 0))
+        disp_fmt['Clienti Unici'] = disp_fmt['Clienti Unici'].apply(lambda x: fmt_eu(x, 0))
+        disp_fmt['A'] = disp_fmt['A'].apply(lambda x: fmt_eu(x, 0))
+        disp_fmt['B'] = disp_fmt['B'].apply(lambda x: fmt_eu(x, 0))
+        disp_fmt['C'] = disp_fmt['C'].apply(lambda x: fmt_eu(x, 0))
+        disp_fmt['Volume'] = disp_fmt['Volume'].apply(lambda x: fmt_eu(x, 0))
+        disp_fmt['Ore Visite'] = disp_fmt['Ore Visite'].apply(lambda x: fmt_eu(x, 1))
+        disp_fmt['Ore Viaggio'] = disp_fmt['Ore Viaggio'].apply(lambda x: fmt_eu(x, 1))
+        disp_fmt['Ore Totali'] = disp_fmt['Ore Totali'].apply(lambda x: fmt_eu(x, 1))
+        disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
+        disp_fmt['Min/GG'] = disp_fmt['Min/GG'].apply(lambda x: fmt_eu(x, 1))
+        disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
+
         def color_sat(v):
             if pd.isna(v):
                 return ''
             try:
-                n = float(str(v).replace('%', ''))
+                # Estrai il numero dalla stringa formattata (rimuovi % e sostituisci separatori)
+                clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
+                n = float(clean)
                 if n > 110:
                     return 'background-color:#ffcdd2;color:#b71c1c'
                 elif n > 100:
@@ -577,15 +655,7 @@ def main():
             except:
                 return ''
 
-        styled = disp.style.map(color_sat, subset=['Sat %']).format({
-            'Volume': '{:,.0f}',
-            'Ore Visite': '{:.1f}',
-            'Ore Viaggio': '{:.1f}',
-            'Ore Totali': '{:.1f}',
-            'Sat %': '{:.1f}%',
-            'Min/GG': '{:.1f}',
-            'Vis/GG': '{:.2f}'
-        })
+        styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # --- MAPPA ---
@@ -595,7 +665,7 @@ def main():
         if len(df_map) == 0:
             st.warning("⚠️ Nessun cliente valido da visualizzare sulla mappa.")
         else:
-            st.caption(f"Visualizzati {len(df_map)} clienti su {len(df_w)} totali")
+            st.caption(f"Visualizzati {fmt_eu(len(df_map), 0)} clienti su {fmt_eu(len(df_w), 0)} totali")
             show_hull = st.checkbox("Mostra confini territori", value=True)
 
             fig = px.scatter_mapbox(
