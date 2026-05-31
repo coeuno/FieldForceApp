@@ -15,7 +15,6 @@ st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="w
 def fmt_eu(value, decimals=0, suffix='', prefix=''):
     """
     Formatta un numero con separatore migliaia europeo (.) e decimale (,)
-    Esempio: 1234567.89 → '1.234.567,89'
     """
     if pd.isna(value):
         return ''
@@ -61,13 +60,6 @@ def haversine_km(lon1, lat1, lon2, lat2):
     return 6371.0 * (2.0 * np.arcsin(np.sqrt(a)))
 
 def classify_abc(df, volume_col, da_a, da_b, da_c):
-    """
-    Classifica clienti in base alle soglie 'da' della tabella.
-    A: volume >= da_a
-    B: volume >= da_b e volume < da_a
-    C: volume >= da_c e volume < da_b
-    Non Attivi: volume < da_c
-    """
     df = df.copy()
     conditions = [
         df[volume_col] >= da_a,
@@ -92,10 +84,6 @@ def compute_hull(df, lat_c, lon_c):
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
                    use_nearest_neighbor=False):
-    """
-    Esegue l'intero calcolo di assegnazione e saturazione.
-    I clienti "Non Attivi" (volume < da_c) sono esclusi dalla simulazione.
-    """
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
     df_v_valid = df_v_act[valid_mask]
@@ -107,14 +95,9 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         missing = set(active_list) - set(df_v_valid['sales rep'])
         st.warning(f"⚠️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
 
-    # --- Preparazione clienti ---
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
-
-    # Classifica TUTTI i clienti (inclusi Non Attivi)
     df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
-
-    # Escludi i Non Attivi dalla simulazione
     df_w = df_w[df_w['classe'] != 'Non Attivo'].copy()
 
     if len(df_w) == 0:
@@ -122,7 +105,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
 
-    # --- ASSEGNAZIONE CLIENTI ---
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
@@ -161,12 +143,10 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w['rep_lat'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
     df_w['rep_lon'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
 
-    # --- Frequenze e ore visita ---
     freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
 
-    # --- Modello viaggio ---
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
@@ -185,7 +165,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     travel_df = pd.DataFrame(travel_data)
 
-    # --- Aggregazione per venditore ---
     agg = df_w.groupby('assigned_rep').agg(
         n_clienti=('assigned_rep', 'count'),
         n_clienti_uniq=('sold to id', 'nunique'),
@@ -233,25 +212,53 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # =============================================================================
 def main():
     # =============================================================================
-    # CSS PERSONALIZZATO: CENTRO + SEPARATORI EUROPEI
+    # CSS PERSONALIZZATO - AGGRESSIVO PER ALLINEAMENTO CENTRALE
     # =============================================================================
     st.markdown("""
     <style>
-        /* Allinea tutto il testo nelle tabelle al centro */
+        /* FORZA allineamento centro per TUTTE le tabelle */
         .dataframe td, .dataframe th {
             text-align: center !important;
             vertical-align: middle !important;
+            padding: 8px !important;
         }
-        /* Allinea anche i numeri nei metric */
-        [data-testid="stMetricValue"] {
+        
+        /* Allinea metric al centro */
+        [data-testid="stMetric"] {
             text-align: center !important;
         }
-        /* Migliora leggibilità tabelle */
+        [data-testid="stMetricValue"] {
+            text-align: center !important;
+            justify-content: center !important;
+        }
+        [data-testid="stMetricLabel"] {
+            text-align: center !important;
+            justify-content: center !important;
+        }
+        
+        /* Sidebar pulsante fisso in alto */
+        .sidebar-button {
+            position: sticky;
+            top: 10px;
+            z-index: 999;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        
+        /* Editor dati centrato */
+        .stDataFrame table td {
+            text-align: center !important;
+        }
+        
+        /* Migliora leggibilità */
         .dataframe {
             font-size: 0.9rem !important;
         }
-        /* Migliora l'editor dati */
-        .stDataFrame table td {
+        
+        /* Centra tutti i testi */
+        div[data-testid="stMarkdown"], div[data-testid="stMarkdownContainer"] {
             text-align: center !important;
         }
     </style>
@@ -262,6 +269,13 @@ def main():
 
     # --- SIDEBAR ---
     with st.sidebar:
+        # PULSANTE FISSO IN ALTO (sempre visibile)
+        st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
+        manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.divider()
+        
         st.subheader("📁 Dati di Input")
         uploaded = st.file_uploader("Carica Excel (Clienti + Venditori)", type=['xlsx'])
 
@@ -327,9 +341,16 @@ def main():
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
-        ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
+        ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5, 
+                                 help="Ore totali disponibili (incluse guida e pause)")
         gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
-        st.caption(f"*Capacità annua lorda: {ore_gg * gg_lavoro:,.0f} ore*")
+        
+        # NUOVO: Pausa pranzo
+        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=15,
+                                 help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
+        
+        ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
+        st.caption(f"*Capacità annua effettiva: {ore_effettive_gg * gg_lavoro:,.0f} ore (dopo pausa)*")
 
         vel_media = st.slider("🚗 Velocità media (km/h)", 40, 100, 65, step=5)
 
@@ -339,15 +360,13 @@ def main():
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
-        manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
-
     # =============================================================================
-    # MATRICE ABC - VERSIONE STABLE & RESPONSIVE
+    # MATRICE ABC - VERSIONE REVISIONATA CON CALLBACK
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie (da/a) e visite. 'a' = -1 significa 'Max' (infinito). I clienti sotto la soglia C sono 'Non Attivi'.")
+    st.caption("Modifica soglie e visite. I cambiamenti richiedono di cliccare 'Lancia Simulazione'.")
 
-    # Inizializzazione UNA SOLA volta
+    # Inizializzazione matrice
     if 'abc_matrix' not in st.session_state:
         st.session_state.abc_matrix = pd.DataFrame({
             'da': [801, 301, 10, 0],
@@ -355,20 +374,18 @@ def main():
             'Categoria': ['A', 'B', 'C', 'Non Attivi'],
             'Visite anno': [24, 12, 3, 0]
         })
+    
+    if 'abc_matrix_counter' not in st.session_state:
+        st.session_state.abc_matrix_counter = 0
 
-    # Forza aggiornamento solo se la struttura è corrotta
-    expected_cols = ['da', 'a', 'Categoria', 'Visite anno']
-    if list(st.session_state.abc_matrix.columns) != expected_cols or len(st.session_state.abc_matrix) != 4:
-        st.session_state.abc_matrix = pd.DataFrame({
-            'da': [801, 301, 10, 0],
-            'a': [-1, 800, 300, 9],
-            'Categoria': ['A', 'B', 'C', 'Non Attivi'],
-            'Visite anno': [24, 12, 3, 0]
-        })
+    # Callback per forzare aggiornamento
+    def update_abc_matrix():
+        st.session_state.abc_matrix_counter += 1
+        st.session_state.abc_needs_update = True
 
-    # Editor con configurazione ottimizzata
+    # Editor con key dinamica per forzare refresh
     edited_matrix = st.data_editor(
-        st.session_state.abc_matrix,
+        st.session_state.abc_matrix.copy(),
         column_config={
             'da': st.column_config.NumberColumn(
                 'da ≥',
@@ -402,27 +419,28 @@ def main():
         },
         hide_index=True,
         use_container_width=True,
-        key="abc_matrix_editor",
+        key=f"abc_matrix_editor_{st.session_state.abc_matrix_counter}",
         num_rows="fixed",
-        disabled=["Categoria"]
+        disabled=["Categoria"],
+        on_change=update_abc_matrix
     )
 
-    # Aggiorna session state SOLO se ci sono modifiche effettive
+    # Salva solo se diverso
     if not edited_matrix.equals(st.session_state.abc_matrix):
         st.session_state.abc_matrix = edited_matrix.copy()
 
     # Estrazione parametri
     try:
-        edited_matrix = edited_matrix.sort_values('Categoria').reset_index(drop=True)
+        edited_matrix_sorted = edited_matrix.sort_values('Categoria').reset_index(drop=True)
 
-        da_a = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'da'].values[0]))
-        da_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'da'].values[0]))
-        da_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'da'].values[0]))
-        da_na = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'Non Attivi', 'da'].values[0]))
+        da_a = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'A', 'da'].values[0]))
+        da_b = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'B', 'da'].values[0]))
+        da_c = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'C', 'da'].values[0]))
+        da_na = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'Non Attivi', 'da'].values[0]))
 
-        freq_a = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Visite anno'].values[0]))
-        freq_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite anno'].values[0]))
-        freq_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite anno'].values[0]))
+        freq_a = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'A', 'Visite anno'].values[0]))
+        freq_b = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'B', 'Visite anno'].values[0]))
+        freq_c = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'C', 'Visite anno'].values[0]))
 
         min_vol = da_c
 
@@ -434,7 +452,7 @@ def main():
         freq_a, freq_b, freq_c = 24, 12, 3
         min_vol = da_c
 
-    # Preview distribuzione clienti
+    # Preview distribuzione clienti (si aggiorna SEMPRE in tempo reale)
     if uploaded:
         try:
             df_preview = df_c.copy()
@@ -444,21 +462,47 @@ def main():
             total = len(df_preview)
             total_attivi = len(df_preview[df_preview['classe'] != 'Non Attivo'])
 
+            # Layout centrato con columns
             col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
+            
             with col_prev1:
                 n_a = dist.get('A', 0)
-                st.metric(f"🟢 Classe A (≥{fmt_eu(da_a, 0)})", f"{fmt_eu(n_a, 0)}", f"{n_a/total*100:.1f}%")
+                st.markdown(f"<div style='text-align: center;'><span style='color: #00ff00; font-size: 24px;'>●</span><br><b>Classe A (≥{fmt_eu(da_a, 0)})</b></div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_a, 0)}</div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_a/total*100:.1f}%</div>", 
+                           unsafe_allow_html=True)
+                
             with col_prev2:
                 n_b = dist.get('B', 0)
-                st.metric(f"🟡 Classe B ({fmt_eu(da_b, 0)}-{fmt_eu(da_a-1, 0)})", f"{fmt_eu(n_b, 0)}", f"{n_b/total*100:.1f}%")
+                st.markdown(f"<div style='text-align: center;'><span style='color: #ffff00; font-size: 24px;'>●</span><br><b>Classe B ({fmt_eu(da_b, 0)}-{fmt_eu(da_a-1, 0)})</b></div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_b, 0)}</div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_b/total*100:.1f}%</div>", 
+                           unsafe_allow_html=True)
+                
             with col_prev3:
                 n_c = dist.get('C', 0)
-                st.metric(f"🔴 Classe C ({fmt_eu(da_c, 0)}-{fmt_eu(da_b-1, 0)})", f"{fmt_eu(n_c, 0)}", f"{n_c/total*100:.1f}%")
+                st.markdown(f"<div style='text-align: center;'><span style='color: #ff0000; font-size: 24px;'>●</span><br><b>Classe C ({fmt_eu(da_c, 0)}-{fmt_eu(da_b-1, 0)})</b></div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_c, 0)}</div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_c/total*100:.1f}%</div>", 
+                           unsafe_allow_html=True)
+                
             with col_prev4:
                 n_na = dist.get('Non Attivo', 0)
-                st.metric(f"🔵 Non Attivi (<{fmt_eu(da_c, 0)})", f"{fmt_eu(n_na, 0)}", f"{n_na/total*100:.1f}%")
+                st.markdown(f"<div style='text-align: center;'><span style='color: #0088ff; font-size: 24px;'>●</span><br><b>Non Attivi (<{fmt_eu(da_c, 0)})</b></div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_na, 0)}</div>", 
+                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_na/total*100:.1f}%</div>", 
+                           unsafe_allow_html=True)
 
-            st.caption(f"📊 Clienti attivi (A+B+C): **{fmt_eu(total_attivi, 0)}** su {fmt_eu(total, 0)} totali ({total_attivi/total*100:.1f}%)")
+            st.markdown(f"<div style='text-align: center; margin-top: 10px; padding: 10px; background-color: #1e1e1e; border-radius: 5px;'>📊 Clienti attivi (A+B+C): <b>{fmt_eu(total_attivi, 0)}</b> su {fmt_eu(total, 0)} totali ({total_attivi/total*100:.1f}%)</div>", 
+                       unsafe_allow_html=True)
         except Exception as e:
             st.caption(f"Preview non disponibile: {e}")
 
@@ -485,6 +529,11 @@ def main():
 
     if manual_run:
         run_sim = True
+        st.session_state.abc_needs_update = False
+
+    # Warning se matrice cambiata ma non lanciata simulazione
+    if st.session_state.get('abc_needs_update', False) and not run_sim:
+        st.warning("⚠️ **Matrice ABC modificata!** Clicca '🚀 Lancia Simulazione' per aggiornare i risultati.")
 
     if run_sim:
         with st.spinner("⚡ Calcolo scenario in corso..."):
@@ -495,7 +544,7 @@ def main():
                 else:
                     res, df_w = run_simulation(
                         df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
-                        freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
+                        freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
                         use_nearest_neighbor=use_nn
                     )
                     if res is None:
@@ -505,7 +554,7 @@ def main():
                         st.session_state.current_df_work = df_w
                         st.session_state.current_params = {
                             'active_list': active_list,
-                            'ore_gg': ore_gg,
+                            'ore_gg': ore_effettive_gg,
                             'gg_lavoro': gg_lavoro,
                             'vel_media': vel_media,
                             'dur_visita': dur_visita,
@@ -516,6 +565,7 @@ def main():
                         }
                         st.session_state.current_df_v = df_v
                         st.success(f"✅ Simulazione completata! Clienti sotto {fmt_eu(min_vol, 0)} esclusi (Non Attivi).")
+                        st.session_state.abc_needs_update = False
             except Exception as e:
                 st.error(f"❌ Errore calcolo: {e}")
                 import traceback
@@ -534,16 +584,20 @@ def main():
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Venditori Attivi", fmt_eu(len(params['active_list']), 0))
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']), 0)}</div></div>", 
+                       unsafe_allow_html=True)
         with col2:
             total_customers = int(res['n_clienti'].sum())
-            st.metric("Clienti Serviti (Righe)", fmt_eu(total_customers, 0))
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti (Righe)</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers, 0)}</div></div>", 
+                       unsafe_allow_html=True)
         with col3:
             avg_sat = res['saturazione_pct'].mean()
-            st.metric("Saturazione Media", f"{avg_sat:.1f}%".replace('.', ','))
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", 
+                       unsafe_allow_html=True)
         with col4:
             overload = len(res[res['saturazione_pct'] > 100])
-            st.metric("Venditori Overload", fmt_eu(overload, 0), delta_color="inverse")
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload, 0)}</div></div>", 
+                       unsafe_allow_html=True)
 
         st.info(f"📍 Modalità: **{params['modo']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c), 0)}** | " + 
                 ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata con Nearest Neighbor"))
@@ -584,13 +638,17 @@ def main():
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         delta_v = len(other['result']) - len(base['result'])
-                        st.metric("Venditori", f"{fmt_eu(len(base['result']), 0)} → {fmt_eu(len(other['result']), 0)}", delta=fmt_eu(delta_v, 0))
+                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori</div><div style='font-size: 24px; font-weight: bold;'>{fmt_eu(len(base['result']), 0)} → {fmt_eu(len(other['result']), 0)}</div><div style='color: {'red' if delta_v < 0 else 'green'}; font-size: 18px;'>{'↓' if delta_v < 0 else '↑'} {fmt_eu(abs(delta_v), 0)}</div></div>", 
+                                   unsafe_allow_html=True)
                     with c2:
-                        st.metric("Clienti",
-                                  f"{fmt_eu(int(base['result']['n_clienti'].sum()), 0)} → {fmt_eu(int(other['result']['n_clienti'].sum()), 0)}")
+                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti</div><div style='font-size: 24px; font-weight: bold;'>{fmt_eu(int(base['result']['n_clienti'].sum()), 0)} → {fmt_eu(int(other['result']['n_clienti'].sum()), 0)}</div></div>", 
+                                   unsafe_allow_html=True)
                     with c3:
-                        st.metric("Sat. Media",
-                                  f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%".replace('.', ','))
+                        base_sat = base['result']['saturazione_pct'].mean()
+                        other_sat = other['result']['saturazione_pct'].mean()
+                        delta_sat = other_sat - base_sat
+                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Sat. Media</div><div style='font-size: 24px; font-weight: bold;'>{base_sat:.1f}% → {other_sat:.1f}%</div><div style='color: {'red' if delta_sat > 5 else 'green' if delta_sat < -5 else 'orange'}; font-size: 18px;'>{'↑' if delta_sat > 0 else '↓'} {abs(delta_sat):.1f}%</div></div>", 
+                                   unsafe_allow_html=True)
 
                     df_base = base['result'].set_index('sales_rep')
                     df_other = other['result'].set_index('sales_rep')
@@ -599,7 +657,6 @@ def main():
                     ).reset_index()
                     delta.columns = ['Venditore', 'Δ Saturazione %', 'Δ Clienti', 'Δ Ore Totali']
                     
-                    # Formattazione europea per la tabella delta
                     delta_fmt = delta.copy()
                     delta_fmt['Δ Saturazione %'] = delta_fmt['Δ Saturazione %'].apply(lambda x: fmt_eu(x, 1, '%'))
                     delta_fmt['Δ Clienti'] = delta_fmt['Δ Clienti'].apply(lambda x: fmt_eu(x, 0))
@@ -622,7 +679,6 @@ def main():
         disp.columns = ['Venditore', 'Stato', 'Clienti (Righe)', 'Clienti Unici', 'A', 'B', 'C', 'Volume',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
 
-        # Applica formattazione europea alle colonne numeriche
         disp_fmt = disp.copy()
         disp_fmt['Clienti (Righe)'] = disp_fmt['Clienti (Righe)'].apply(lambda x: fmt_eu(x, 0))
         disp_fmt['Clienti Unici'] = disp_fmt['Clienti Unici'].apply(lambda x: fmt_eu(x, 0))
@@ -641,7 +697,6 @@ def main():
             if pd.isna(v):
                 return ''
             try:
-                # Estrai il numero dalla stringa formattata (rimuovi % e sostituisci separatori)
                 clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
                 n = float(clean)
                 if n > 110:
@@ -748,7 +803,7 @@ def main():
         )
 
     else:
-        st.info("👈 Carica il file Excel nella sidebar per iniziare. La simulazione partirà automaticamente.")
+        st.info("👈 Carica il file Excel nella sidebar e clicca '🚀 Lancia Simulazione' per iniziare.")
 
 
 if __name__ == "__main__":
