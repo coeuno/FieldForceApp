@@ -7,7 +7,7 @@ from scipy.spatial import ConvexHull
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="📊")
+st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
 
 # DIZIONARIO TORTUOSITÀ PROVINCIALE
 PROVINCIAL_TORTUOSITY = {
@@ -57,10 +57,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce')
     df_w = df_w.dropna(subset=[col_vol])
     
-    if len(df_w) == 0: 
-        return None, "Nessun cliente sopra la soglia minima."
-    if len(active_list) == 0: 
-        return None, "Seleziona almeno un venditore."
+    if len(df_w) == 0: return None, "Nessun cliente sopra la soglia minima."
+    if len(active_list) == 0: return None, "Seleziona almeno un venditore."
     
     df_w = classify_abc(df_w, col_vol, thr_a, thr_b)
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
@@ -83,7 +81,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     df_w['assigned_rep'] = df_v_act.iloc[idx_min]['sales rep'].values
     df_w['dist_km'] = min_dists
     
-    # Aggiungi coordinate venditore
+    # Coordinate venditore per ogni cliente
     df_w['rep_lat'] = 0.0
     df_w['rep_lon'] = 0.0
     for rep in active_list:
@@ -93,16 +91,12 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
             df_w.loc[mask, 'rep_lat'] = rep_info['latitudine'].iloc[0]
             df_w.loc[mask, 'rep_lon'] = rep_info['longitudine'].iloc[0]
     
-    # Debug
-    st.write("📊 Distribuzione clienti:")
-    st.write(df_w['assigned_rep'].value_counts())
-    
     # Frequenze
     freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
     
-    # Calcolo viaggio
+    # Calcolo viaggio (Modello Densità)
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
@@ -135,13 +129,20 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     
     max_ore_campo = ore_gg * gg_lavoro
     agg['ore_totali_annue'] = agg['ore_visite_annue'] + agg['ore_viaggio_annue']
-    agg['saturazione_pct'] = (agg['ore_totali_annue'] / max_ore_campo) * 100
+    
+    # PROTEZIONE SATURAZIONE (evita divisione per zero o falsi allarmi)
+    agg['saturazione_pct'] = np.where(
+        max_ore_campo > 0, 
+        (agg['ore_totali_annue'] / max_ore_campo) * 100, 
+        0.0
+    )
+    
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
     
     def get_alert(s):
         if s > 110: return "🔴 CRITICO"
-        elif s > 100: return "🟠 OVERLOAD"
+        elif s > 100: return " OVERLOAD"
         elif s > 85: return "🟡 ATTENZIONE"
         else: return "🟢 OK"
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
@@ -149,6 +150,13 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     all_reps = pd.DataFrame({'sales_rep': active_list})
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
     result = result.sort_values('saturazione_pct', ascending=False)
+    
+    # DEBUG RICHIESTO: Stampa distribuzione e statistiche chiave
+    st.write("🔍 DEBUG DISTRIBUZIONE & STATISTICHE:")
+    st.write(f"📊 Clienti assegnati per venditore:\n{df_w['assigned_rep'].value_counts()}")
+    st.write(f"📏 Shape DataFrame: {df_w.shape}")
+    st.write(f"📉 Statistiche Ore/Distanze:\n{df_w[['dist_km', 'ore_visita_annue', 'ore_viaggio_annue']].describe()}")
+    st.write(f" NaN Coordinate: {df_w[['latitudine', 'longitudine']].isna().sum().to_dict()}")
     
     return result, df_w
 
@@ -199,9 +207,9 @@ def main():
             freq_a = st.number_input("Visite/anno - A", 6, 36, 12, 2)
             freq_b = st.number_input("Visite/anno - B", 3, 18, 6, 1)
             freq_c = st.number_input("Visite/anno - C", 1, 6, 3, 1)
-            dur_visita = st.slider("⏱️ Durata visita (min)", 40, 150, 90, 5)
+            dur_visita = st.slider("️ Durata visita (min)", 40, 150, 90, 5)
             
-            ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, 0.5)
+            ore_gg = st.number_input(" Ore lavorative/giorno", 6.0, 10.0, 8.0, 0.5)
             gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, 5)
             st.caption(f"*Capacità annua: {ore_gg * gg_lavoro:,.0f} ore*")
             
@@ -257,7 +265,7 @@ def main():
         
         with col_name:
             nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
-            if st.button("💾 Salva Scenario", use_container_width=True) and nome_scen:
+            if st.button(" Salva Scenario", use_container_width=True) and nome_scen:
                 st.session_state.scenarios[nome_scen] = {
                     'result': res.copy(), 'df_work': df_w.copy(), 'params': params
                 }
@@ -308,22 +316,27 @@ def main():
             'Volume':'{:,.0f}', 'Ore Visite':'{:.1f}', 'Ore Viaggio':'{:.1f}',
             'Ore Totali':'{:.1f}', 'Sat %':'{:.1f}%', 'Min/GG':'{:.1f}', 'Vis/GG':'{:.2f}'
         })
-        st.dataframe(styled, use_container_width=True)
+        st.dataframe(styled, use_container_width=True, hide_index=True)  # FIX: hide_index=True
         
-        st.subheader("🗺️ Mappa Territori")
+        st.subheader("️ Mappa Territori")
+        
+        # PULIZIA DATI PER MAPPA (evita crash Plotly su NaN)
+        df_map = df_w.dropna(subset=['latitudine', 'longitudine'])
+        st.write(f"📊 Mappa: {len(df_map)} clienti validi su {len(df_w)} totali")
+        
         show_hull = st.checkbox("Mostra confini territori", True)
         
-        fig = px.scatter_mapbox(df_w, lat="latitudine", lon="longitudine", color="assigned_rep",
+        fig = px.scatter_mapbox(df_map, lat="latitudine", lon="longitudine", color="assigned_rep",
                                 size="freq_visite", size_max=8, zoom=5, height=600, render_mode="webgl")
         if show_hull:
             colors = px.colors.qualitative.Set3
             for i, r in enumerate(params['active_list']):
-                sub = df_w[df_w['assigned_rep']==r]
+                sub = df_map[df_map['assigned_rep']==r]
                 lon_h, lat_h = compute_hull(sub, 'latitudine', 'longitudine')
                 if lon_h is not None:
                     fig.add_trace(go.Scattermapbox(mode="lines", lon=lon_h, lat=lat_h, line=dict(width=2, color=colors[i%len(colors)]), name=r))
         
-        df_v_markers = df_w[['rep_lat','rep_lon','assigned_rep']].drop_duplicates(subset=['assigned_rep'])
+        df_v_markers = df_map[['rep_lat','rep_lon','assigned_rep']].drop_duplicates(subset=['assigned_rep'])
         fig.add_trace(go.Scattermapbox(lat=df_v_markers['rep_lat'], lon=df_v_markers['rep_lon'],
                        mode='markers+text', marker=dict(size=14, symbol='star', color='black'),
                        text=df_v_markers['assigned_rep'], textposition="top center", name='🏠 Home'))
