@@ -3,174 +3,107 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
-# Configurazione della pagina
 st.set_page_config(page_title="Ottimizzazione Giri Visite", layout="wide")
+st.title("🚚 Sistema di Ottimizzazione Giri Visite")
 
-st.title("🚚 Sistema di Ottimizzazione Giri Visite Sales Rep")
-st.write("Carica il tuo file Excel definitivo con i fogli 'clienti_geocodificati' e 'venditori' per analizzare le rotte.")
+# 🔍 SEGNALE DI CONTROLLO: Se vedi questa scritta, l'app si è aggiornata!
+st.sidebar.markdown("### 🟢 STATO APP: VERSIONE NUOVA BLINDATA")
 
-# --- FUNZIONI DI SERVIZIO COSTRUITE IN CASA ---
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """Calcola la distanza in KM tra due punti geografici (Formula Haversine)"""
-    R = 6371.0 # Raggio della Terra in km
-    phi1, phi2 = np.radians(lat1), np.radians(lat2)
-    delta_phi = np.radians(lat2 - lat1)
-    delta_lambda = np.radians(lon2 - lon1)
-    a = np.sin(delta_phi / 2.0)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(delta_lambda / 2.0)**2
-    c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
-    return R * c
-
-def aggiusta_coordinate(valore):
-    """Corregge il problema dei punti/virgole di Excel Italiano (es. 446471 -> 44.6471)"""
-    try:
-        val = float(valore)
-        if val > 90 or val < -90:
-            s_val = str(int(val))
-            if len(s_val) >= 5:
-                return float(f"{s_val[:2]}.{s_val[2:]}")
-        return val
-    except:
-        return np.nan
-
-# --- BARRA LATERALE PER IL CARICAMENTO DATI ---
-st.sidebar.header("📂 Caricamento File Definitivo")
 uploaded_file = st.sidebar.file_uploader("Carica il file Excel (.xlsx)", type=["xlsx"])
 
 if uploaded_file is not None:
     try:
-        # 1. LETTURA DEI FOGLI
-        df_clienti_grezzo = pd.read_excel(uploaded_file, sheet_name="clienti_geocodificati")
-        df_venditori_grezzo = pd.read_excel(uploaded_file, sheet_name="venditori")
+        # Caricamento fogli
+        df_clienti = pd.read_excel(uploaded_file, sheet_name="clienti_geocodificati")
+        df_venditori = pd.read_excel(uploaded_file, sheet_name="venditori")
         
-        # 🛡️ ANTI-TRAPPOLA PIVOT: Se i titoli sono slittati in basso a causa dei filtri, riallineiamo la tabella
-        for i in range(min(15, len(df_venditori_grezzo))):
-            riga_valori = df_venditori_grezzo.iloc[i].astype(str).str.lower().tolist()
-            if any(any(x in str(v) for x in ["etichette", "sales", "rep", "agente", "venditore", "abitazione", "lat", "lon"]) for v in riga_valori):
-                if i > 0:
-                    df_venditori_grezzo.columns = df_venditori_grezzo.iloc[i]
-                    df_venditori_grezzo = df_venditori_grezzo.iloc[i+1:].reset_index(drop=True)
-                break
+        # Pulizia totale dei nomi delle colonne (tutto minuscolo e senza spazi vuoti)
+        df_clienti.columns = [str(c).strip().lower() for c in df_clienti.columns]
+        df_venditori.columns = [str(c).strip().lower() for c in df_venditori.columns]
+        
+        # Identificazione colonne chiave con tolleranza totale sui nomi
+        col_c_rep = next((c for c in df_clienti.columns if "rep" in c or "venditore" in c or "agente" in c), None)
+        col_v_rep = next((c for c in df_venditori.columns if "rep" in c or "venditore" in c or "agente" in c or "etichette" in c), None)
+        
+        if not col_c_rep or not col_v_rep:
+            st.error("❌ Impossibile trovare la colonna del Venditore/Sales Rep nei fogli Excel. Verifica i nomi.")
+            st.stop()
+            
+        # Allineamento nomi interni
+        df_clienti = df_clienti.rename(columns={col_c_rep: "sales_rep_key"})
+        df_venditori = df_venditori.rename(columns={col_v_rep: "sales_rep_key"})
+        
+        col_c_nome = next((c for c in df_clienti.columns if "name" in c or "ragione" in c or "cliente" in c), df_clienti.columns[0])
+        col_c_lat = next((c for c in df_clienti.columns if "lat" in c), None)
+        col_c_lon = next((c for c in df_clienti.columns if "lon" in c), None)
+        col_v_lat = next((c for c in df_venditori.columns if "lat" in c), None)
+        col_v_lon = next((c for c in df_venditori.columns if "lon" in c), None)
+        
+        # Funzioni di calcolo e pulizia coordinate
+        def haversine(lat1, lon1, lat2, lon2):
+            try:
+                r = 6371.0
+                p1, p2 = np.radians(float(lat1)), np.radians(float(lat2))
+                dp = np.radians(float(lat2) - float(lat1))
+                dl = np.radians(float(lon2) - float(lon1))
+                a = np.sin(dp/2)**2 + np.cos(p1)*np.cos(p2)*np.sin(dl/2)**2
+                return 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1-a)) * r
+            except: return np.nan
 
-        # 2. RICONOSCIMENTO AUTOMATICO VENDITORI PER POSIZIONE (Infallibile, evita i KeyError)
-        df_venditori_grezzo.columns = [str(c).strip() for c in df_venditori_grezzo.columns]
-        v_cols = [c.lower() for c in df_venditori_grezzo.columns]
-        
-        idx_v_nome = next((i for i, c in enumerate(v_cols) if any(x in c for x in ["sales", "rep", "agente", "venditore", "etichette", "row"])), 0)
-        idx_v_lat = next((i for i, c in enumerate(v_cols) if "lat" in c), 1 if len(v_cols) > 1 else 0)
-        idx_v_lon = next((i for i, c in enumerate(v_cols) if "lon" in c), 2 if len(v_cols) > 2 else 0)
-        idx_v_comune = next((i for i, c in enumerate(v_cols) if any(x in c for x in ["abitazione", "città", "citta", "residenza", "comune"])), -1)
-        
-        # Riassegnazione diretta per indice di posizione
-        nuovi_nomi_v = list(df_venditori_grezzo.columns)
-        nuovi_nomi_v[idx_v_nome] = "SALES REP"
-        if idx_v_lat < len(nuovi_nomi_v): nuovi_nomi_v[idx_v_lat] = "Latitudine"
-        if idx_v_lon < len(nuovi_nomi_v): nuovi_nomi_v[idx_v_lon] = "Longitudine"
-        df_venditori_grezzo.columns = nuovi_nomi_v
-        
-        df_venditori = df_venditori_grezzo.copy()
-        df_venditori["Abitazione"] = df_venditori.iloc[:, idx_v_comune] if idx_v_comune != -1 else "Non Specificata"
+        def pulisci_coord(v):
+            try:
+                val = float(v)
+                if val > 90 or val < -90:
+                    s = str(int(val))
+                    if len(s) >= 5: return float(f"{s[:2]}.{s[2:]}")
+                return val
+            except: return np.nan
 
-        # 3. RICONOSCIMENTO AUTOMATICO CLIENTI PER POSIZIONE
-        df_clienti_grezzo.columns = [str(c).strip() for c in df_clienti_grezzo.columns]
-        c_cols = [c.lower() for c in df_clienti_grezzo.columns]
-        
-        idx_c_nome = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["sold to name", "ragione", "nome", "cliente"])), 0)
-        idx_c_rep = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["sales", "rep", "agente", "venditore"])), 1 if len(c_cols) > 1 else 0)
-        idx_c_lat = next((i for i, c in enumerate(c_cols) if "lat" in c), -1)
-        idx_c_lon = next((i for i, c in enumerate(c_cols) if "lon" in c), -1)
-        idx_c_comune = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["comune", "città", "citta"])), -1)
-        idx_c_prov = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["provincia", "sigla", "prov"])), -1)
-        
-        nuovi_nomi_c = list(df_clienti_grezzo.columns)
-        nuovi_nomi_c[idx_c_nome] = "SOLD TO NAME"
-        nuovi_nomi_c[idx_c_rep] = "SALES REP"
-        if idx_c_lat != -1: nuovi_nomi_c[idx_c_lat] = "Latitudine"
-        if idx_c_lon != -1: nuovi_nomi_c[idx_c_lon] = "Longitudine"
-        if idx_c_comune != -1: nuovi_nomi_c[idx_c_comune] = "COMUNE"
-        if idx_c_prov != -1: nuovi_nomi_c[idx_c_prov] = "PROVINCIA"
-        df_clienti_grezzo.columns = nuovi_nomi_c
-        
-        df_clienti = df_clienti_grezzo.copy()
+        if col_v_lat and col_v_lon:
+            df_venditori[col_v_lat] = df_venditori[col_v_lat].apply(pulisci_coord)
+            df_venditori[col_v_lon] = df_venditori[col_v_lon].apply(pulisci_coord)
+        if col_c_lat and col_c_lon:
+            df_clienti[col_c_lat] = df_clienti[col_c_lat].apply(pulisci_coord)
+            df_clienti[col_c_lon] = df_clienti[col_c_lon].apply(pulisci_coord)
 
-        # Pulizia dati venditori finali
-        df_venditori = df_venditori.dropna(subset=["SALES REP"]).drop_duplicates(subset=["SALES REP"]).copy()
-        df_venditori["Latitudine"] = df_venditori["Latitudine"].apply(aggiusta_coordinate)
-        df_venditori["Longitudine"] = df_venditori["Longitudine"].apply(aggiusta_coordinate)
+        df_v_pulito = df_venditori.dropna(subset=["sales_rep_key"]).drop_duplicates(subset=["sales_rep_key"])
+        mappa_v = df_v_pulito.set_index("sales_rep_key")[[col_v_lat, col_v_lon]].to_dict(orient="index")
 
-        # Mostra i contatori reali delle righe analizzate
-        c1, c2 = st.columns(2)
-        c1.metric("📊 Clienti Totali Rilevati", f"{len(df_clienti)} anagrafiche")
-        c2.metric("👤 Venditori Unici Rilevati", f"{len(df_venditori)} sales rep")
+        distanze = []
+        for _, riga in df_clienti.iterrows():
+            rep = riga["sales_rep_key"]
+            lat_c, lon_c = riga[col_c_lat], riga[col_c_lon]
+            if rep in mappa_v and pd.notna(lat_c) and pd.notna(lon_c):
+                v_lat, v_lon = mappa_v[rep][col_v_lat], mappa_v[rep][col_v_lon]
+                if pd.notna(v_lat) and pd.notna(v_lon):
+                    distanze.append(haversine(v_lat, v_lon, lat_c, lon_c))
+                    continue
+            distanze.append(np.nan)
+        df_clienti["distanza_km"] = distanze
 
-        # --- SELEZIONE DINAMICA DEL VOLUME ---
-        st.sidebar.subheader("📈 Selezione Parametri Volumi")
-        colonne_volumi = [c for c in df_clienti.columns if any(x in str(c).upper() for x in ["GY", "DU", "CO", "TOT", "PEZZI"])]
+        # Analisi ABC dinamica
+        colonne_volumi = [c for c in df_clienti.columns if any(x in c for x in ["gy", "du", "co", "tot", "pezzi"])]
+        volume_scelto = st.sidebar.selectbox("Colonna volumi per ABC:", options=colonne_volumi if colonne_volumi else [df_clienti.columns[0]])
         
-        if colonne_volumi:
-            volume_scelto = st.sidebar.selectbox("Quale colonna di volumi usi per le Classi ABC?", options=colonne_volumi, index=colonne_volumi.index("TOT 25") if "TOT 25" in colonne_volumi else 0)
-        else:
-            df_clienti["Volume_Finto"] = 1
-            volume_scelto = "Volume_Finto"
-
-        # --- CALCOLO CLASSI ABC ---
-        st.subheader(f"📊 Classificazione ABC Clienti (Su colonna: {volume_scelto})")
         df_clienti[volume_scelto] = pd.to_numeric(df_clienti[volume_scelto], errors='coerce').fillna(0)
         df_ordinato = df_clienti.sort_values(by=volume_scelto, ascending=False).copy()
-        
-        totale_pezzi = df_ordinato[volume_scelto].sum()
-        df_ordinato["Perc_Cumulata"] = df_ordinato[volume_scelto].cumsum() / totale_pezzi * 100 if totale_pezzi > 0 else 0
-        df_ordinato["Classe_ABC"] = df_ordinato["Perc_Cumulata"].apply(lambda x: "A" if x <= 70 else ("B" if x <= 90 else "C"))
-        
-        abc_counts = df_ordinato["Classe_ABC"].value_counts().reindex(["A", "B", "C"]).fillna(0)
-        ca, cb, cc = st.columns(3)
-        ca.info(f"**Classe A (Top 70% Volumi):** {int(abc_counts['A'])} clienti")
-        cb.warning(f"**Classe B (Centro 20% Volumi):** {int(abc_counts['B'])} clienti")
-        cc.error(f"**Classe C (Coda 10% Volumi):** {int(abc_counts['C'])} clienti")
+        tot = df_ordinato[volume_scelto].sum()
+        df_ordinato["cum"] = df_ordinato[volume_scelto].cumsum() / tot * 100 if tot > 0 else 0
+        df_ordinato["classe_abc"] = df_ordinato["cum"].apply(lambda x: "A" if x <= 70 else ("B" if x <= 90 else "C"))
 
-        # --- CALCOLO DISTANZE REALI CASA-CLIENTE ---
-        st.subheader("📍 Verifica Distanze e Assegnazioni")
-        mappa_v = df_venditori.set_index("SALES REP")[["Latitudine", "Longitudine"]].to_dict(orient="index")
-        
-        distanze = []
-        for _, riga in df_ordinato.iterrows():
-            rep = riga["SALES REP"]
-            lat_c, lon_c = riga["Latitudine"], riga["Longitudine"]
-            if rep in mappa_v and pd.notna(lat_c) and pd.notna(lon_c) and pd.notna(mappa_v[rep]["Latitudine"]):
-                distanze.append(haversine_distance(mappa_v[rep]["Latitudine"], mappa_v[rep]["Longitudine"], lat_c, lon_c))
-            else:
-                distanze.append(np.nan)
-                
-        df_ordinato["Distanza_da_Casa_KM"] = distanze
-        
-        # Controllo colonne disponibili per evitare errori visivi
-        colonne_visibili = ["SALES REP", "SOLD TO NAME"]
-        if "COMUNE" in df_ordinato.columns: colonne_visibili.append("COMUNE")
-        if "PROVINCIA" in df_ordinato.columns: colonne_visibili.append("PROVINCIA")
-        colonne_visibili.extend([volume_scelto, "Classe_ABC", "Distanza_da_Casa_KM"])
-        
-        st.dataframe(df_ordinato[colonne_visibili].style.format({"Distanza_da_Casa_KM": "{:.1f} km", volume_scelto: "{:,.0f}"}))
-        
-        # --- MAPPA INTERATTIVA ---
-        st.subheader("🗺️ Mappa Distribuzione Clienti e Venditori")
-        df_ordinato["Tipo"] = "Cliente " + df_ordinato["Classe_ABC"]
-        df_venditori["Tipo"] = "Venditore (Casa)"
-        df_venditori["SOLD TO NAME"] = df_venditori["SALES REP"]
-        df_venditori["COMUNE"] = df_venditori["Abitazione"]
-        df_venditori[volume_scelto] = 0
-        
-        if "COMUNE" not in df_ordinato.columns: df_ordinato["COMUNE"] = "N/D"
-        
-        mappa_df = pd.concat([
-            df_ordinato[["Latitudine", "Longitudine", "SOLD TO NAME", "COMUNE", "Tipo", volume_scelto]], 
-            df_venditori[["Latitudine", "Longitudine", "SOLD TO NAME", "COMUNE", "Tipo", volume_scelto]]
-        ]).dropna(subset=["Latitudine", "Longitudine"])
-        
-        fig = px.scatter_mapbox(mappa_df, lat="Latitudine", lon="Longitudine", color="Tipo", hover_name="SOLD TO NAME", hover_data=["COMUNE", volume_scelto], zoom=5, height=600, color_discrete_map={"Cliente A": "#1f77b4", "Cliente B": "#ff7f0e", "Cliente C": "#d62728", "Venditore (Casa)": "#2ca02c"})
+        # Visualizzazione metriche e tabelle
+        st.columns(2)[0].metric("📊 Clienti Totali", f"{len(df_clienti)} anagrafiche")
+        st.columns(2)[1].metric("👤 Venditori Totali", f"{len(df_v_pulito)} sales rep")
+
+        st.subheader("📍 Riepilogo Dati Calcolati")
+        st.dataframe(df_ordinato)
+
+        st.subheader("🗺️ Mappa Distribuzione")
+        fig = px.scatter_mapbox(df_ordinato, lat=col_c_lat, lon=col_c_lon, color="classe_abc", hover_name=col_c_nome, zoom=5, height=500)
         fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
         st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Si è verificato un problema nella lettura del file Excel: {e}")
-        st.info("Verifica che i fogli si chiamino esattamente 'clienti_geocodificati' e 'venditori'.")
+        st.error(f"Qualcosa è andato storto nell'elaborazione: {e}")
 else:
     st.info("👋 In attesa del caricamento del file Excel definitivo.")
