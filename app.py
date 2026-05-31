@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="📊")
 
-# DIZIONARIO TORTUOSITÀ PROVINCIALE (ISTAT 2024 + fallback legacy)
+# DIZIONARIO TORTUOSITÀ PROVINCIALE
 PROVINCIAL_TORTUOSITY = {
     "MI": 1.15, "LO": 1.15, "CR": 1.15, "MN": 1.15, "BS": 1.15, "BG": 1.15, "PV": 1.15,
     "VC": 1.15, "NO": 1.15, "VE": 1.15, "PD": 1.15, "RO": 1.15, "VR": 1.15, "VI": 1.15,
@@ -49,17 +49,6 @@ def compute_hull(df, lat_c, lon_c):
         return pts[idx, 0], pts[idx, 1]
     except: return None, None
 
-def calculate_travel_hours(df_rep_clients, vel_media):
-    """Modello di viaggio a densità territoriale (SFE Standard)"""
-    if len(df_rep_clients) == 0: return 0.0
-    rep_lat, rep_lon = df_rep_clients['rep_lat'].iloc[0], df_rep_clients['rep_lon'].iloc[0]
-    dists = haversine_km(df_rep_clients['longitudine'], df_rep_clients['latitudine'], rep_lon, rep_lat)
-    max_radius_km = np.max(dists)
-    avg_dist_per_visit = max_radius_km * 0.55  # Coefficiente densità validato
-    avg_tort = df_rep_clients['tortuosity'].mean()
-    total_visits = df_rep_clients['freq_visite'].sum()
-    return (total_visits * avg_dist_per_visit * avg_tort) / vel_media
-
 def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b, 
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media):
     
@@ -68,34 +57,71 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce')
     df_w = df_w.dropna(subset=[col_vol])
     
-    if len(df_w) == 0: return None, "Nessun cliente sopra la soglia minima."
-    if len(active_list) == 0: return None, "Seleziona almeno un venditore."
+    if len(df_w) == 0: 
+        return None, "Nessun cliente sopra la soglia minima."
+    if len(active_list) == 0: 
+        return None, "Seleziona almeno un venditore."
     
     df_w = classify_abc(df_w, col_vol, thr_a, thr_b)
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
     
-    # Assegnazione Nearest Neighbor
-    c_lat, c_lon = df_w['latitudine'].values, df_w['longitudine'].values
-    v_lat, v_lon = df_v_act['latitudine'].values, df_v_act['longitudine'].values
+    # Coordinate
+    c_lats = df_w['latitudine'].values
+    c_lons = df_w['longitudine'].values
+    v_lats = df_v_act['latitudine'].values
+    v_lons = df_v_act['longitudine'].values
     
-    dist_matrix = np.array([[haversine_km(c_lon[i], c_lat[i], v_lon[j], v_lat[j]) for j in range(len(v_lat))] for i in range(len(c_lat))])
+    # Matrice distanze
+    dist_matrix = np.zeros((len(c_lats), len(v_lats)))
+    for j in range(len(v_lats)):
+        dist_matrix[:, j] = haversine_km(c_lons, c_lats, v_lons[j], v_lats[j])
+    
+    # Assegnazione
     idx_min = np.argmin(dist_matrix, axis=1)
+    min_dists = np.min(dist_matrix, axis=1)
     
-    df_w['assigned_rep'] = [active_list[i] for i in idx_min]
-    df_w['rep_lat'] = v_lat[idx_min]
-    df_w['rep_lon'] = v_lon[idx_min]
+    df_w['assigned_rep'] = df_v_act.iloc[idx_min]['sales rep'].values
+    df_w['dist_km'] = min_dists
     
+    # Aggiungi coordinate venditore
+    df_w['rep_lat'] = 0.0
+    df_w['rep_lon'] = 0.0
+    for rep in active_list:
+        rep_info = df_v_act[df_v_act['sales rep'] == rep]
+        if len(rep_info) > 0:
+            mask = df_w['assigned_rep'] == rep
+            df_w.loc[mask, 'rep_lat'] = rep_info['latitudine'].iloc[0]
+            df_w.loc[mask, 'rep_lon'] = rep_info['longitudine'].iloc[0]
+    
+    # Debug
+    st.write("📊 Distribuzione clienti:")
+    st.write(df_w['assigned_rep'].value_counts())
+    
+    # Frequenze
     freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
     
-    # Calcolo viaggio sicuro (evita bug pandas groupby.apply)
+    # Calcolo viaggio
     travel_data = []
-    for rep in df_w['assigned_rep'].unique():
+    for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
-        travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': calculate_travel_hours(sub, vel_media)})
+        if len(sub) > 0:
+            rep_lat = sub['rep_lat'].iloc[0]
+            rep_lon = sub['rep_lon'].iloc[0]
+            dists = haversine_km(sub['longitudine'], sub['latitudine'], rep_lon, rep_lat)
+            max_radius = np.max(dists) if len(dists) > 0 else 0
+            avg_dist = max_radius * 0.55
+            avg_tort = sub['tortuosity'].mean()
+            total_visits = sub['freq_visite'].sum()
+            ore_viag = (total_visits * avg_dist * avg_tort) / vel_media
+            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag})
+        else:
+            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0})
+    
     travel_df = pd.DataFrame(travel_data)
     
+    # Aggregazione
     agg = df_w.groupby('assigned_rep').agg(
         n_clienti=('assigned_rep', 'count'),
         n_classe_a=('classe', lambda x: (x=='A').sum()),
@@ -106,6 +132,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     ).reset_index().rename(columns={'assigned_rep': 'sales_rep'})
     
     agg = agg.merge(travel_df, on='sales_rep', how='left').fillna(0)
+    
     max_ore_campo = ore_gg * gg_lavoro
     agg['ore_totali_annue'] = agg['ore_visite_annue'] + agg['ore_viaggio_annue']
     agg['saturazione_pct'] = (agg['ore_totali_annue'] / max_ore_campo) * 100
@@ -122,6 +149,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     all_reps = pd.DataFrame({'sales_rep': active_list})
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
     result = result.sort_values('saturazione_pct', ascending=False)
+    
     return result, df_w
 
 def main():
@@ -159,14 +187,13 @@ def main():
         
         reps = sorted(df_v['sales rep'].unique())
         
-        # FORM per evitare auto-refresh
         with st.form("sim_params", clear_on_submit=False):
             st.subheader("⚙️ Parametri Simulazione")
             vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26'])]
             col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
             
             min_vol = st.number_input("🔻 Taglia minima cliente", 0, 100000, 0, 100)
-            thr_a = st.number_input(" Soglia Classe A", 1000, 10000, 3000, 500)
+            thr_a = st.number_input("🔷 Soglia Classe A", 1000, 10000, 3000, 500)
             thr_b = st.number_input("🔶 Soglia Classe B", 200, 2999, 800, 100)
             
             freq_a = st.number_input("Visite/anno - A", 6, 36, 12, 2)
@@ -181,12 +208,10 @@ def main():
             vel_media = st.slider("🚗 Velocità media (km/h)", 40, 100, 65, 5)
             
             st.subheader("👥 Stato Venditori")
-            # Checkbox come richiesto
             rep_status = {r: st.checkbox(r, value=True) for r in reps}
             
             submit_btn = st.form_submit_button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
             
-    # Inizializza session state
     if 'scenarios' not in st.session_state:
         st.session_state.scenarios = {}
     if 'current_result' not in st.session_state:
@@ -221,7 +246,6 @@ def main():
         df_w = st.session_state.current_df_work
         params = st.session_state.current_params
         
-        # Gestione Scenari
         st.divider()
         col_btn, col_name = st.columns([2, 1])
         with col_btn:
@@ -229,7 +253,7 @@ def main():
                 st.session_state.scenarios["📍 BASELINE (Attuale)"] = {
                     'result': res.copy(), 'df_work': df_w.copy(), 'params': params
                 }
-                st.success("✅ Baseline salvata! Ora modifica i parametri, ricalcola e salva altri scenari per il confronto.")
+                st.success("✅ Baseline salvata!")
         
         with col_name:
             nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
@@ -239,7 +263,6 @@ def main():
                 }
                 st.success(f"✅ '{nome_scen}' salvato!")
 
-        # Confronto
         if len(st.session_state.scenarios) >= 2:
             st.divider()
             st.subheader("📊 Confronto Scenari")
@@ -264,7 +287,6 @@ def main():
                     delta.columns = ['Venditore', 'Δ Saturazione %', 'Δ Clienti', 'Δ Ore Totali']
                     st.dataframe(delta.style.format({'Δ Saturazione %':'{:+.1f}%', 'Δ Clienti':'{:+.0f}', 'Δ Ore Totali':'{:+.1f}'}).background_gradient(subset=['Δ Saturazione %'], cmap='RdYlGn_r'), use_container_width=True)
 
-        # Output Scenario Corrente
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
         disp = res[['sales_rep', 'stato', 'n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 
@@ -289,7 +311,6 @@ def main():
         st.dataframe(styled, use_container_width=True)
         
         st.subheader("🗺️ Mappa Territori")
-        st.info(" *Modello viaggio: stima distanza media tra visite concatenate basata sulla densità del bacino (coeff. 0.55). Calcolo carico strutturale, non routing GPS.*")
         show_hull = st.checkbox("Mostra confini territori", True)
         
         fig = px.scatter_mapbox(df_w, lat="latitudine", lon="longitudine", color="assigned_rep",
@@ -301,21 +322,19 @@ def main():
                 lon_h, lat_h = compute_hull(sub, 'latitudine', 'longitudine')
                 if lon_h is not None:
                     fig.add_trace(go.Scattermapbox(mode="lines", lon=lon_h, lat=lat_h, line=dict(width=2, color=colors[i%len(colors)]), name=r))
-                    
-        # Home base markers
-        reps_active = params['active_list']
-        df_v_temp = df_w[['rep_lat','rep_lon','assigned_rep']].drop_duplicates()
-        fig.add_trace(go.Scattermapbox(lat=df_v_temp['rep_lat'], lon=df_v_temp['rep_lon'],
+        
+        df_v_markers = df_w[['rep_lat','rep_lon','assigned_rep']].drop_duplicates(subset=['assigned_rep'])
+        fig.add_trace(go.Scattermapbox(lat=df_v_markers['rep_lat'], lon=df_v_markers['rep_lon'],
                        mode='markers+text', marker=dict(size=14, symbol='star', color='black'),
-                       text=df_v_temp['assigned_rep'], textposition="top center", name='🏠 Home'))
+                       text=df_v_markers['assigned_rep'], textposition="top center", name='🏠 Home'))
         
         fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":30,"l":0,"b":0})
         st.plotly_chart(fig, use_container_width=True)
         
         csv = res.to_csv(index=False, sep=';', decimal=',')
-        st.download_button(" Esporta CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
+        st.download_button("📥 Esporta CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
     else:
-        st.info("👈 Configura parametri nella sidebar e clicca LANCIA SIMULAZIONE. Nessuna modifica automatica finché non premi il bottone.")
+        st.info("👈 Configura parametri nella sidebar e clicca LANCIA SIMULAZIONE.")
 
 if __name__ == "__main__":
     main()
