@@ -83,7 +83,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
         st.warning(f"⚠️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
 
     # --- Preparazione clienti ---
-    # FIX: min_vol a -1 per includere TUTTI i clienti (anche volume 0 o NaN)
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
 
@@ -115,15 +114,12 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
         df_w['assegnazione'] = 'nearest_neighbor'
     else:
         # Modalità MAPPA ATTUALE: usa la colonna 'sales rep' dal file clienti
-        # Verifica che esista la colonna sales rep nei clienti
         if 'sales rep' not in df_w.columns:
             return None, "Errore: colonna 'sales rep' mancante nel foglio clienti. Aggiungila in colonna M."
 
         df_w['assigned_rep'] = df_w['sales rep']
-        # Filtra solo clienti assegnati a venditori attivi
         df_w = df_w[df_w['assigned_rep'].isin(active_list)].copy()
 
-        # Calcola distanza dal venditore assegnato
         df_w = df_w.merge(
             df_v_valid[['sales rep', 'latitudine', 'longitudine']].rename(
                 columns={'latitudine': 'rep_lat', 'longitudine': 'rep_lon', 'sales rep': 'assigned_rep'}
@@ -166,11 +162,9 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     travel_df = pd.DataFrame(travel_data)
 
     # --- Aggregazione per venditore ---
-    # FIX: conta le RIGHE (clienti-sede), non i clienti unici
-    # Per il conteggio unico opzionale, aggiungiamo anche n_clienti_uniq
     agg = df_w.groupby('assigned_rep').agg(
-        n_clienti=('assigned_rep', 'count'),           # RIGHE totali (come nel file)
-        n_clienti_uniq=('sold to id', 'nunique'),      # Clienti unici (SOLD TO ID distinti)
+        n_clienti=('assigned_rep', 'count'),
+        n_clienti_uniq=('sold to id', 'nunique'),
         n_classe_a=('classe', lambda x: (x == 'A').sum()),
         n_classe_b=('classe', lambda x: (x == 'B').sum()),
         n_classe_c=('classe', lambda x: (x == 'C').sum()),
@@ -314,29 +308,45 @@ def main():
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
 
     # =============================================================================
-    # MATRICE ABC nel MAIN PANEL (spostata dalla sidebar)
+    # MATRICE ABC nel MAIN PANEL - ORA COMPLETAMENTE EDITABILE
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    matrice_default = pd.DataFrame({
-        'Categoria': ['A', 'B', 'C'],
-        'Soglia Minima (≥)': [3000, 800, 0],
-        'Soglia Massima': ['Max', '2999', '799'],
-        'Visite/Anno': [12, 6, 3]
-    })
+    st.caption("Modifica soglie e frequenze per profilare i clienti sulla colonna volume selezionata")
+
+    # Inizializza la matrice in session_state se non esiste
+    if 'abc_matrix' not in st.session_state:
+        st.session_state.abc_matrix = pd.DataFrame({
+            'Categoria': ['A', 'B', 'C'],
+            'Soglia Minima (≥)': [3000, 800, 0],
+            'Visite/Anno': [12, 6, 3]
+        })
+
+    # data_editor con TUTTE le colonne modificabili (no disabled)
     edited_matrix = st.data_editor(
-        matrice_default,
+        st.session_state.abc_matrix,
         column_config={
             'Categoria': st.column_config.TextColumn(disabled=True),
-            'Soglia Minima (≥)': st.column_config.NumberColumn(step=1, min_value=0),
-            'Soglia Massima': st.column_config.TextColumn(disabled=True),
-            'Visite/Anno': st.column_config.NumberColumn(step=1, min_value=1)
+            'Soglia Minima (≥)': st.column_config.NumberColumn(
+                step=100, 
+                min_value=0,
+                help="Volume minimo per entrare in questa categoria"
+            ),
+            'Visite/Anno': st.column_config.NumberColumn(
+                step=1, 
+                min_value=1,
+                help="Numero di visite annuali per questa categoria"
+            )
         },
         hide_index=True,
         use_container_width=True,
-        key="matrice_abc"
+        key="matrice_abc_editor",
+        num_rows="fixed"
     )
 
-    # Estrazione parametri dalla matrice
+    # Salva la matrice modificata in session state per persistenza
+    st.session_state.abc_matrix = edited_matrix.copy()
+
+    # Estrazione parametri dalla matrice editata
     try:
         thr_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Soglia Minima (≥)'].values[0])
         thr_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Soglia Minima (≥)'].values[0])
@@ -346,6 +356,28 @@ def main():
     except Exception:
         st.error("❌ Errore nella lettura della matrice. Usa i valori default.")
         thr_a, thr_b, freq_a, freq_b, freq_c = 3000, 800, 12, 6, 3
+
+    # Preview distribuzione clienti per categoria (basato sui dati caricati)
+    if uploaded:
+        try:
+            df_preview = df_c.copy()
+            df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
+            df_preview = classify_abc(df_preview, col_vol, thr_a, thr_b)
+            dist = df_preview['classe'].value_counts().sort_index()
+            total = len(df_preview)
+
+            col_prev1, col_prev2, col_prev3 = st.columns(3)
+            with col_prev1:
+                n_a = dist.get('A', 0)
+                st.metric(f"🔴 Classe A (≥{thr_a:,})", f"{n_a:,}", f"{n_a/total*100:.1f}%")
+            with col_prev2:
+                n_b = dist.get('B', 0)
+                st.metric(f"🟡 Classe B ({thr_b:,}-{thr_a-1:,})", f"{n_b:,}", f"{n_b/total*100:.1f}%")
+            with col_prev3:
+                n_c = dist.get('C', 0)
+                st.metric(f"🟢 Classe C (<{thr_b:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
+        except:
+            pass
 
     # =============================================================================
     # STATO SESSIONE
