@@ -111,14 +111,12 @@ def calculate_travel_km_aggregated(df_customers, rep_home_lat, rep_home_lon, max
         fattore_dispersione = 1.30
         
     # 4. Efficienza routing (legge rendimenti decrescenti)
-    # Ogni stop extra oltre il 5° migliora efficienza del 3%, cap a 0.85
     efficienza = max(0.85, 1.00 - (0.03 * (max_stops_per_day - 5)))
     
     # 5. Tortuosità media del territorio coperto
     avg_tort = custs['sigla'].map(tortuosity_dict).fillna(1.25).mean()
     
     # 6. Calcolo finale km/anno
-    # Formula: Visite * DistanzaMedia * 2 (A/R) * Tortuosità * Dispersione / Efficienza
     km_annui = total_visits * dist_media_ponderata * 2.0 * avg_tort * fattore_dispersione / efficienza
     
     return km_annui
@@ -136,7 +134,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     if len(df_v_valid) < len(active_list):
         missing = set(active_list) - set(df_v_valid['sales rep'])
-        st.warning(f"️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
+        st.warning(f"⚠️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
 
     # --- Preparazione clienti ---
     df_w = df_c.copy()
@@ -319,7 +317,7 @@ def main():
 
         for col in ['latitudine', 'longitudine', 'sigla']:
             if col not in df_c.columns:
-                st.error(f" Clienti: manca colonna '{col}'")
+                st.error(f"❌ Clienti: manca colonna '{col}'")
                 return
         for col in ['latitudine', 'longitudine', 'sales rep']:
             if col not in df_v.columns:
@@ -337,7 +335,7 @@ def main():
 
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
         clienti_con_rep = df_c['sales rep'].notna().sum()
-        st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
+        st.caption(f" {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
 
         # --- MODALITÀ ---
@@ -356,11 +354,11 @@ def main():
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
 
-        dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
-        ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
+        dur_visita = st.slider("️ Durata media visita (min)", 40, 150, 90, step=5)
+        ore_gg = st.number_input(" Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input(" Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
         
-        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5,
+        pausa_pranzo = st.slider("️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5,
                                  help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
         
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
@@ -379,7 +377,7 @@ def main():
     # =============================================================================
     # MATRICE ABC - INPUT DIRETTI
     # =============================================================================
-    st.subheader("📊 Matrice Classificazione ABC & Frequenze")
+    st.subheader(" Matrice Classificazione ABC & Frequenze")
     st.caption("Modifica soglie e visite direttamente nei campi sotto.")
 
     if 'abc_values' not in st.session_state:
@@ -399,7 +397,7 @@ def main():
         freq_a = st.number_input("Visite/anno", key="freq_a", value=st.session_state.abc_values['freq_a'], min_value=0, step=1)
     
     with col2:
-        st.markdown("**🟡 Classe B**")
+        st.markdown("** Classe B**")
         da_b = st.number_input("da ≥", key="da_b", value=st.session_state.abc_values['da_b'], min_value=0, step=1)
         a_b = st.number_input("a <", key="a_b", value=st.session_state.abc_values['a_b'], min_value=-1, step=1)
         freq_b = st.number_input("Visite/anno", key="freq_b", value=st.session_state.abc_values['freq_b'], min_value=0, step=1)
@@ -482,11 +480,11 @@ def main():
     if manual_run: run_sim = True
 
     if run_sim:
-        with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
+        with st.spinner(" Calcolo scenario Density-Aware in corso..."):
             try:
                 active_list = [r for r, s in rep_status.items() if s]
                 if len(active_list) == 0:
-                    st.error("️ Seleziona almeno un venditore")
+                    st.error("⚠️ Seleziona almeno un venditore")
                 else:
                     res, df_w = run_simulation(
                         df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
@@ -555,7 +553,7 @@ def main():
 
         with col_name:
             nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
-            if st.button(" Salva Scenario", use_container_width=True) and nome_scen:
+            if st.button("💾 Salva Scenario", use_container_width=True) and nome_scen:
                 st.session_state.scenarios[nome_scen] = {
                     'result': res.copy(),
                     'df_work': df_w.copy(),
@@ -566,7 +564,7 @@ def main():
         # --- CONFRONTO SCENARI ---
         if len(st.session_state.scenarios) >= 2:
             st.divider()
-            st.subheader("📊 Confronto Scenari")
+            st.subheader(" Confronto Scenari")
             base_name = "📍 BASELINE (Attuale)"
             altri = [k for k in st.session_state.scenarios.keys() if k != base_name]
             if altri:
@@ -644,7 +642,7 @@ def main():
         styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
-        # --- MAPPA ---
+        # --- MAPPA (VERSIONE STABILIZZATA) ---
         st.subheader("🗺️ Mappa Territori Attuali")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
 
@@ -652,37 +650,20 @@ def main():
             st.warning("⚠️ Nessun cliente valido da visualizzare sulla mappa.")
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map), 0)} clienti assegnati")
-            show_hull = st.checkbox("Mostra confini territori (Convex Hull)", value=True)
-
+            
             fig = px.scatter_mapbox(
                 df_map,
                 lat="latitudine",
                 lon="longitudine",
                 color="assigned_rep",
                 size="freq_visite",
-                size_max=10,
+                size_max=8,
                 zoom=5,
                 height=600,
-                opacity=0.8,
+                opacity=0.75,
                 hover_name="assigned_rep",
                 hover_data={"classe": True, "freq_visite": True, "dist_km": ":.1f"}
             )
-
-            if show_hull:
-                colors = px.colors.qualitative.Set3
-                for i, r in enumerate(params['active_list']):
-                    sub = df_map[df_map['assigned_rep'] == r]
-                    if len(sub) >= 3:
-                        lon_h, lat_h = compute_hull(sub, 'latitudine', 'longitudine')
-                        if lon_h is not None:
-                            fig.add_trace(go.Scattermapbox(
-                                mode="lines",
-                                lon=lon_h,
-                                lat=lat_h,
-                                line=dict(width=2, color=colors[i % len(colors)]),
-                                name=f"Confine {r}",
-                                showlegend=True
-                            ))
 
             df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
                 subset=['latitudine', 'longitudine']
@@ -692,18 +673,25 @@ def main():
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
                     mode='markers+text',
-                    marker=dict(size=16, symbol='star', color='black', line=dict(width=2, color='white')),
+                    marker=dict(size=12, color='black', symbol='circle'),
                     text=df_v_active['sales rep'],
                     textposition="top center",
-                    textfont=dict(size=10, color='black'),
+                    textfont=dict(size=9, color='white', family="Arial"),
                     name='🏠 Home Base',
-                    hoverinfo='text'
+                    showlegend=True
                 ))
 
             fig.update_layout(
                 mapbox_style="open-street-map",
-                margin={"r": 0, "t": 30, "l": 0, "b": 0},
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor='rgba(255,255,255,0.8)')
+                margin=dict(r=0, t=30, l=0, b=0),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1,
+                    bgcolor='rgba(255,255,255,0.9)'
+                )
             )
             st.plotly_chart(fig, use_container_width=True)
 
