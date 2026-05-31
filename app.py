@@ -39,12 +39,18 @@ def haversine_km(lon1, lat1, lon2, lat2):
     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
     return 6371.0 * (2.0 * np.arcsin(np.sqrt(a)))
 
-def classify_abc(df, volume_col, thr_a, thr_b):
+def classify_abc(df, volume_col, da_a, da_b, da_c):
+    """
+    Classifica clienti in base alle soglie 'da' della tabella.
+    A: volume >= da_a
+    B: volume >= da_b e volume < da_a
+    C: volume >= da_c e volume < da_b
+    """
     df = df.copy()
     conditions = [
-        df[volume_col] >= thr_a,
-        (df[volume_col] >= thr_b) & (df[volume_col] < thr_a),
-        df[volume_col] < thr_b
+        df[volume_col] >= da_a,
+        (df[volume_col] >= da_b) & (df[volume_col] < da_a),
+        df[volume_col] < da_b
     ]
     df['classe'] = np.select(conditions, ['A', 'B', 'C'], default='C')
     return df
@@ -60,16 +66,11 @@ def compute_hull(df, lat_c, lon_c):
     except:
         return None, None
 
-def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
+def run_simulation(df_c, df_v, active_list, col_vol, min_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
                    use_nearest_neighbor=False):
     """
     Esegue l'intero calcolo di assegnazione e saturazione.
-
-    use_nearest_neighbor=False: usa l'assegnazione 'sales rep' dal file clienti (mappa attuale)
-    use_nearest_neighbor=True:  ricalcola assegnazione con nearest neighbor (simulazione downsizing)
-
-    Restituisce: (result_df, df_work) oppure (None, msg_errore)
     """
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
@@ -92,12 +93,11 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     if len(df_w) == 0:
         return None, "Nessun cliente sopra la soglia minima."
 
-    df_w = classify_abc(df_w, col_vol, thr_a, thr_b)
+    df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
 
     # --- ASSEGNAZIONE CLIENTI ---
     if use_nearest_neighbor:
-        # Modalità SIMULAZIONE: nearest neighbor per riassegnare clienti dei venditori rimossi
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
         valid_rep_names = df_v_valid['sales rep'].values
@@ -113,9 +113,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
         df_w['dist_km'] = min_dists
         df_w['assegnazione'] = 'nearest_neighbor'
     else:
-        # Modalità MAPPA ATTUALE: usa la colonna 'sales rep' dal file clienti
         if 'sales rep' not in df_w.columns:
-            return None, "Errore: colonna 'sales rep' mancante nel foglio clienti. Aggiungila in colonna M."
+            return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
 
         df_w['assigned_rep'] = df_w['sales rep']
         df_w = df_w[df_w['assigned_rep'].isin(active_list)].copy()
@@ -133,7 +132,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
         )
         df_w['assegnazione'] = 'attuale'
 
-    # Coordinate base venditore (per mappa)
     df_w['rep_lat'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
     df_w['rep_lon'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
 
@@ -142,7 +140,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
 
-    # --- Modello viaggio: stima per densità territoriale ---
+    # --- Modello viaggio ---
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
@@ -197,7 +195,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
 
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
 
-    # Merge con tutti i venditori attivi (anche quelli a 0 clienti)
     all_reps = pd.DataFrame({'sales_rep': active_list})
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
     result = result.sort_values('saturazione_pct', ascending=False)
@@ -221,12 +218,10 @@ def main():
             st.info("👆 Carica il file per iniziare")
             return
 
-        # Rilevamento nuovo file → trigger autolancio
         file_signature = f"{uploaded.name}_{uploaded.size}"
         if file_signature != st.session_state.get('last_upload_signature', ''):
             st.session_state.last_upload_signature = file_signature
             st.session_state.trigger_auto_run = True
-            # Reset scenari precedenti su nuovo file
             st.session_state.scenarios = {}
             st.session_state.current_result = None
             st.session_state.current_df_work = None
@@ -238,11 +233,9 @@ def main():
             st.error(f"❌ Errore lettura file: {e}")
             return
 
-        # Normalizzazione nomi colonne
         df_c.columns = [c.strip().lower() for c in df_c.columns]
         df_v.columns = [c.strip().lower() for c in df_v.columns]
 
-        # Validazione
         for col in ['latitudine', 'longitudine', 'sigla']:
             if col not in df_c.columns:
                 st.error(f"❌ Clienti: manca colonna '{col}'")
@@ -252,20 +245,16 @@ def main():
                 st.error(f"❌ Venditori: manca colonna '{col}'")
                 return
 
-        # Conversione coordinate
         for col in ['latitudine', 'longitudine']:
             df_c[col] = pd.to_numeric(df_c[col], errors='coerce')
             df_v[col] = pd.to_numeric(df_v[col], errors='coerce')
         df_c = df_c.dropna(subset=['latitudine', 'longitudine'])
 
-        # Verifica presenza colonna sales rep nei clienti
         if 'sales rep' not in df_c.columns:
-            st.error("❌ Colonna 'sales rep' mancante nel foglio clienti. Deve essere in colonna M.")
+            st.error("❌ Colonna 'sales rep' mancante nel foglio clienti.")
             return
 
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
-
-        # Info assegnazione attuale
         clienti_con_rep = df_c['sales rep'].notna().sum()
         st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
@@ -275,21 +264,18 @@ def main():
         modo = st.radio(
             "Scegli modalità:",
             ["📍 Mappa Attuale (Assegnazione Reale)", "🔄 Simula Downsizing (Nearest Neighbor)"],
-            index=0,
-            help="Mappa Attuale = usa l'assegnazione sales rep dal file clienti. Simula Downsizing = ricalcola con nearest neighbor per vedere come si ridistribuiscono i clienti se rimuovi venditori."
+            index=0
         )
         use_nn = (modo == "🔄 Simula Downsizing (Nearest Neighbor)")
         st.divider()
 
-        # --- PARAMETRI SIMULAZIONE ---
+        # --- PARAMETRI ---
         st.subheader("⚙️ Parametri Simulazione")
 
-        # Selezione colonna volume
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
 
-        min_vol = st.number_input("🔻 Taglia minima cliente", -1, 100000, -1, step=100,
-                                   help="-1 = includi tutti i clienti, anche con volume 0")
+        min_vol = st.number_input("🔻 Taglia minima cliente", -1, 100000, -1, step=100)
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
@@ -304,36 +290,45 @@ def main():
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
-        # --- BOTTONI ---
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
 
     # =============================================================================
-    # MATRICE ABC nel MAIN PANEL - ORA COMPLETAMENTE EDITABILE
+    # MATRICE ABC - STRUTTURA ESATTA DALL'IMMAGINE
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie e frequenze per profilare i clienti sulla colonna volume selezionata")
+    st.caption("Modifica soglie (da/a) e visite per profilare i clienti sulla colonna volume selezionata")
 
     # Inizializza la matrice in session_state se non esiste
     if 'abc_matrix' not in st.session_state:
         st.session_state.abc_matrix = pd.DataFrame({
+            'da': [801, 301, 0],
+            'a': ['Max', 800, 300],
             'Categoria': ['A', 'B', 'C'],
-            'Soglia Minima (≥)': [3000, 800, 0],
-            'Visite/Anno': [12, 6, 3]
+            'Visite anno': [24, 12, 1]
         })
 
-    # data_editor con TUTTE le colonne modificabili (no disabled)
+    # data_editor con TUTTE le colonne modificabili (tranne Categoria)
     edited_matrix = st.data_editor(
         st.session_state.abc_matrix,
         column_config={
-            'Categoria': st.column_config.TextColumn(disabled=True),
-            'Soglia Minima (≥)': st.column_config.NumberColumn(
-                step=100, 
-                min_value=0,
-                help="Volume minimo per entrare in questa categoria"
-            ),
-            'Visite/Anno': st.column_config.NumberColumn(
+            'da': st.column_config.NumberColumn(
+                label='da',
                 step=1, 
-                min_value=1,
+                min_value=0,
+                help="Soglia minima (inclusiva) per questa categoria"
+            ),
+            'a': st.column_config.TextColumn(
+                label='a',
+                help="Soglia massima. 'Max' per infinito."
+            ),
+            'Categoria': st.column_config.TextColumn(
+                label='Categoria',
+                disabled=True
+            ),
+            'Visite anno': st.column_config.NumberColumn(
+                label='Visite anno',
+                step=1, 
+                min_value=0,
                 help="Numero di visite annuali per questa categoria"
             )
         },
@@ -343,39 +338,40 @@ def main():
         num_rows="fixed"
     )
 
-    # Salva la matrice modificata in session state per persistenza
+    # Salva la matrice modificata in session state
     st.session_state.abc_matrix = edited_matrix.copy()
 
-    # Estrazione parametri dalla matrice editata
+    # Estrazione parametri dalla matrice
     try:
-        thr_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Soglia Minima (≥)'].values[0])
-        thr_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Soglia Minima (≥)'].values[0])
-        freq_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Visite/Anno'].values[0])
-        freq_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite/Anno'].values[0])
-        freq_c = int(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite/Anno'].values[0])
+        da_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'da'].values[0])
+        da_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'da'].values[0])
+        da_c = int(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'da'].values[0])
+        freq_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Visite anno'].values[0])
+        freq_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite anno'].values[0])
+        freq_c = int(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite anno'].values[0])
     except Exception:
         st.error("❌ Errore nella lettura della matrice. Usa i valori default.")
-        thr_a, thr_b, freq_a, freq_b, freq_c = 3000, 800, 12, 6, 3
+        da_a, da_b, da_c, freq_a, freq_b, freq_c = 801, 301, 0, 24, 12, 1
 
-    # Preview distribuzione clienti per categoria (basato sui dati caricati)
+    # Preview distribuzione clienti
     if uploaded:
         try:
             df_preview = df_c.copy()
             df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
-            df_preview = classify_abc(df_preview, col_vol, thr_a, thr_b)
+            df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
             dist = df_preview['classe'].value_counts().sort_index()
             total = len(df_preview)
 
             col_prev1, col_prev2, col_prev3 = st.columns(3)
             with col_prev1:
                 n_a = dist.get('A', 0)
-                st.metric(f"🔴 Classe A (≥{thr_a:,})", f"{n_a:,}", f"{n_a/total*100:.1f}%")
+                st.metric(f"🔴 Classe A (≥{da_a:,})", f"{n_a:,}", f"{n_a/total*100:.1f}%")
             with col_prev2:
                 n_b = dist.get('B', 0)
-                st.metric(f"🟡 Classe B ({thr_b:,}-{thr_a-1:,})", f"{n_b:,}", f"{n_b/total*100:.1f}%")
+                st.metric(f"🟡 Classe B ({da_b:,}-{da_a-1:,})", f"{n_b:,}", f"{n_b/total*100:.1f}%")
             with col_prev3:
                 n_c = dist.get('C', 0)
-                st.metric(f"🟢 Classe C (<{thr_b:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
+                st.metric(f"🟢 Classe C (<{da_b:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
         except:
             pass
 
@@ -392,16 +388,14 @@ def main():
         st.session_state.current_params = {}
 
     # =============================================================================
-    # LOGICA DI LANCIO (Auto o Manuale)
+    # LOGICA DI LANCIO
     # =============================================================================
     run_sim = False
 
-    # Auto-lancio su nuovo file
     if st.session_state.get('trigger_auto_run', False):
         st.session_state.trigger_auto_run = False
         run_sim = True
 
-    # Lancio manuale
     if manual_run:
         run_sim = True
 
@@ -413,7 +407,7 @@ def main():
                     st.error("⚠️ Seleziona almeno un venditore")
                 else:
                     res, df_w = run_simulation(
-                        df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
+                        df_c, df_v, active_list, col_vol, min_vol, da_a, da_b, da_c,
                         freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
                         use_nearest_neighbor=use_nn
                     )
@@ -448,7 +442,7 @@ def main():
         params = st.session_state.current_params
         df_v_curr = st.session_state.get('current_df_v', df_v)
 
-        # --- KPI Riepilogo ---
+        # --- KPI ---
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -463,7 +457,6 @@ def main():
             overload = len(res[res['saturazione_pct'] > 100])
             st.metric("Venditori Overload", overload, delta_color="inverse")
 
-        # Info modalità
         st.info(f"📍 Modalità: **{params['modo']}** | " + 
                 ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata con Nearest Neighbor"))
 
@@ -563,10 +556,8 @@ def main():
         })
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
-        # --- MAPPA TERRITORI ---
+        # --- MAPPA ---
         st.subheader("🗺️ Mappa Territori")
-
-        # Filtra solo clienti con coordinate e assegnazione valide
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
 
         if len(df_map) == 0:
@@ -593,7 +584,6 @@ def main():
                 }
             )
 
-            # Convex Hull per ogni venditore
             if show_hull:
                 colors = px.colors.qualitative.Set3
                 for i, r in enumerate(params['active_list']):
@@ -610,7 +600,6 @@ def main():
                                 showlegend=True
                             ))
 
-            # Marker venditori (dal file venditori originale, non dai clienti)
             df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
                 subset=['latitudine', 'longitudine']
             )
