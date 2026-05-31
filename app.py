@@ -2,101 +2,87 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-from scipy.spatial import ConvexHull
 
-# --- CONFIGURAZIONE PAGINA ---
+# --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Strategic Downsizing Simulator", layout="wide")
 
-# CSS per pulizia visiva e font compatti
 st.markdown("""
     <style>
-    .main-title { font-size: 20px !important; font-weight: bold; margin-bottom: 10px; }
-    .kpi-container { border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #f4f4f4; }
+    .kpi-container { border: 1px solid #ddd; padding: 10px; border-radius: 5px; background-color: #f9f9f9; }
+    .small-font { font-size: 12px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">Strategic Downsizing Simulator & Force Redistribution</p>', unsafe_allow_html=True)
+st.title("Strategic Downsizing Simulator")
 
-# --- DIZIONARIO TORTUOSITÀ ---
-PROVINCIAL_TORTUOSITY = {
-    "MI": 1.15, "LO": 1.15, "CR": 1.15, "MN": 1.15, "BS": 1.15, "BG": 1.15, "PV": 1.15,
-    "VC": 1.15, "NO": 1.15, "VE": 1.15, "PD": 1.15, "RO": 1.15, "VR": 1.15, "VI": 1.15,
-    "TV": 1.15, "FE": 1.15, "RN": 1.15, "LI": 1.15, "PI": 1.15, "PO": 1.15, "LU": 1.15,
-    "MS": 1.15, "PR": 1.15, "PC": 1.15, "RE": 1.15, "MO": 1.15, "BO": 1.15, "RA": 1.15,
-    "FC": 1.15, "PU": 1.15, "FG": 1.15, "BT": 1.15, "BA": 1.15, "BR": 1.15, "LE": 1.15,
-    "TA": 1.15, "RM": 1.15, "LT": 1.15, "FR": 1.15,
-    "VA": 1.25, "CO": 1.25, "LC": 1.25, "SP": 1.25, "IM": 1.25, "SV": 1.25, "CN": 1.25,
-    "GE": 1.25, "AN": 1.25, "MC": 1.25, "FM": 1.25, "AP": 1.25, "PE": 1.25, "CH": 1.25,
-    "TE": 1.25, "RI": 1.25, "VT": 1.25, "GR": 1.25, "PT": 1.25, "FI": 1.25, "SI": 1.25,
-    "AR": 1.25, "PG": 1.25, "TR": 1.25, "CB": 1.25, "IS": 1.25, "CE": 1.25, "NA": 1.25,
-    "AV": 1.25, "BN": 1.25, "SA": 1.25, "PZ": 1.25, "MT": 1.25, "CS": 1.25, "CZ": 1.25,
-    "VV": 1.25, "RC": 1.25, "TP": 1.25, "PA": 1.25, "ME": 1.25, "CT": 1.25, "SR": 1.25,
-    "RG": 1.25, "AG": 1.25, "CL": 1.25, "EN": 1.25, "SS": 1.25, "NU": 1.25, "OR": 1.25,
-    "CA": 1.25, "SU": 1.25, "AO": 1.40, "BL": 1.40, "BZ": 1.40, "TN": 1.40, "SO": 1.40, 
-    "AL": 1.40, "AT": 1.40, "AQ": 1.40
-}
-
-# --- FUNZIONI UTILITY ---
-def haversine_vectorized(lon1, lat1, lon2, lat2):
+# --- FUNZIONI ---
+def haversine(lon1, lat1, lon2, lat2):
     lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
     dlon, dlat = lon2 - lon1, lat2 - lat1
     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
     return 6371.0 * (2.0 * np.arcsin(np.sqrt(a)))
 
-# --- CARICAMENTO DATI ---
+# --- CARICAMENTO ---
 uploaded_file = st.sidebar.file_uploader("Carica File Excel", type=["xlsx"])
+
 if uploaded_file:
     df_c = pd.read_excel(uploaded_file, sheet_name="clienti_geocodificati")
     df_v = pd.read_excel(uploaded_file, sheet_name="venditori")
     
-    # Normalizzazione nomi colonna specifici
-    df_c.rename(columns={'SALES REP': 'sales rep', 'SIGLA': 'sigla'}, inplace=True)
-    df_v.rename(columns={'SALES REP': 'sales rep'}, inplace=True)
+    # PULIZIA TOTALE: minuscolo e strip spazi
+    df_c.columns = [c.strip().lower() for c in df_c.columns]
+    df_v.columns = [c.strip().lower() for c in df_v.columns]
     
-    # Mappatura tortuosità (Fallback 1.25)
-    df_c['tortuosity'] = df_c['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
-    
-    # PARAMETRI SIDEBAR
+    # Mappatura nomi colonne: assicura che esistano
+    df_c = df_c.rename(columns={'sales rep': 'sales rep', 'sigla': 'sigla', 'latitudine': 'latitudine', 'longitudine': 'longitudine'})
+    df_v = df_v.rename(columns={'sales rep': 'sales rep', 'latitudine': 'latitudine', 'longitudine': 'longitudine'})
+
+    # --- SIDEBAR ---
+    st.sidebar.subheader("👤 Venditori Attivi")
     v_list = sorted(df_v['sales rep'].unique())
-    active_reps = {v: st.sidebar.checkbox(v, True) for v in v_list}
+    # Lista compatta
+    active_reps = {v: st.sidebar.checkbox(v, True, key=v) for v in v_list}
     
     if st.sidebar.button("🚀 AVVIA SIMULAZIONE"):
         st.session_state.running = True
-    
-    if st.session_state.get('running', False):
+
+    # --- LOGICA CALCOLO ---
+    # Se non è in simulazione, usa i dati originali (Baseline)
+    if not st.session_state.get('running', False):
+        df_display = df_c.copy()
+        titolo = "Situazione Attuale (Baseline)"
+    else:
         active_list = [v for v, status in active_reps.items() if status]
         df_active_v = df_v[df_v['sales rep'].isin(active_list)]
         
-        # Broadcasting calcolo distanze
         c_coords = df_c[['longitudine', 'latitudine']].values
         v_coords = df_active_v[['longitudine', 'latitudine']].values
         
-        dists = haversine_vectorized(
-            c_coords[:,0][:,None], c_coords[:,1][:,None],
-            v_coords[:,0][None,:], v_coords[:,1][None,:]
-        )
-        
-        # Assegnazione
+        dists = haversine(c_coords[:,0][:,None], c_coords[:,1][:,None], v_coords[:,0][None,:], v_coords[:,1][None,:])
         idx = np.argmin(dists, axis=1)
-        df_c['assigned_rep'] = [active_list[i] for i in idx]
-        df_c['dist_km'] = np.min(dists, axis=1) * df_c['tortuosity']
         
-        # --- MODULO VALIDAZIONE (KPI ORDINATI) ---
-        st.markdown('<div class="kpi-container">', unsafe_allow_html=True)
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Risorse Attive", f"{len(active_list)} / {len(v_list)}")
-        col2.metric("Clienti Riassegnati", f"{(df_c['sales rep'] != df_c['assigned_rep']).sum()}")
-        col3.metric("Copertura", "100% Italia")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Mappa
-        fig = px.scatter_mapbox(df_c, lat="latitudine", lon="longitudine", color="assigned_rep", 
-                                zoom=5, height=500, render_mode="webgl")
-        fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
-        st.plotly_chart(fig, use_container_width=True)
-        
-    else:
-        st.info("Configura i venditori e premi 'AVVIA SIMULAZIONE' per iniziare.")
+        df_display = df_c.copy()
+        df_display['assigned_rep'] = [active_list[i] for i in idx]
+        titolo = "Scenario Simulato"
+
+    # --- VISUALIZZAZIONE ---
+    st.subheader(titolo)
+    
+    # KPI
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Venditori Attivi", len(df_display['sales rep'].unique() if 'assigned_rep' not in df_display else df_display['assigned_rep'].unique()))
+    col2.metric("Totale Clienti", len(df_display))
+    
+    # Tabella sintesi
+    st.write("Sintesi per Venditore:")
+    sintesi = df_display.groupby('assigned_rep' if 'assigned_rep' in df_display else 'sales rep').size().reset_index(name='clienti')
+    st.dataframe(sintesi, use_container_width=True)
+
+    # Mappa
+    fig = px.scatter_mapbox(df_display, lat="latitudine", lon="longitudine", color='assigned_rep' if 'assigned_rep' in df_display else 'sales rep', 
+                            zoom=5, height=500, render_mode="webgl")
+    fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
+    st.plotly_chart(fig, use_container_width=True)
+
 else:
-    st.info("Carica il file Excel per iniziare l'analisi.")
+    st.info("Carica il file Excel per visualizzare la situazione attuale.")
