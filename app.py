@@ -42,15 +42,23 @@ if uploaded_file is not None:
         df_clienti_grezzo = pd.read_excel(uploaded_file, sheet_name="clienti_geocodificati")
         df_venditori_grezzo = pd.read_excel(uploaded_file, sheet_name="venditori")
         
-        # 2. RICONOSCIMENTO AUTOMATICO COLONNE VENDITORI (Risolve il problema della Pivot)
-        col_v_nome = next((c for c in df_venditori_grezzo.columns if any(x in str(c).lower() for x in ["sales", "rep", "agente", "venditore", "etichette", "row"])), None)
-        col_v_lat = next((c for c in df_venditori_grezzo.columns if "lat" in str(c).lower()), None)
-        col_v_lon = next((c for c in df_venditori_grezzo.columns if "lon" in str(c).lower()), None)
+        # 🛡️ ANTI-TRAPPOLA PIVOT: Se i titoli sono slittati in basso a causa dei filtri, li cerchiamo nelle prime 10 righe
+        for i in range(min(10, len(df_venditori_grezzo))):
+            riga_valori = df_venditori_grezzo.iloc[i].astype(str).str.lower().tolist()
+            if any(any(x in str(v) for x in ["etichette", "sales", "rep", "agente", "venditore", "abitazione"]) for v in riga_valori):
+                df_venditori_grezzo.columns = df_venditori_grezzo.iloc[i]
+                df_venditori_grezzo = df_venditori_grezzo.iloc[i+1:].reset_index(drop=True)
+                break
+
+        # 2. RICONOSCIMENTO AUTOMATICO COLONNE VENDITORI (Con fallback di sicurezza se fallisce)
+        col_v_nome = next((c for c in df_venditori_grezzo.columns if any(x in str(c).lower() for x in ["sales", "rep", "agente", "venditore", "etichette", "row"])), df_venditori_grezzo.columns[0])
+        col_v_lat = next((c for c in df_venditori_grezzo.columns if "lat" in str(c).lower()), df_venditori_grezzo.columns[1] if len(df_venditori_grezzo.columns) > 1 else None)
+        col_v_lon = next((c for c in df_venditori_grezzo.columns if "lon" in str(c).lower()), df_venditori_grezzo.columns[2] if len(df_venditori_grezzo.columns) > 2 else None)
         col_v_comune = next((c for c in df_venditori_grezzo.columns if any(x in str(c).lower() for x in ["abitazione", "città", "citta", "residenza", "dove", "comune"])), None)
 
         # 3. RICONOSCIMENTO AUTOMATICO COLONNE CLIENTI
-        col_c_nome = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["sold to name", "ragione", "nome", "cliente"])), None)
-        col_c_rep = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["sales", "rep", "agente", "venditore"])), None)
+        col_c_nome = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["sold to name", "ragione", "nome", "cliente"])), df_clienti_grezzo.columns[0])
+        col_c_rep = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["sales", "rep", "agente", "venditore"])), df_clienti_grezzo.columns[1] if len(df_clienti_grezzo.columns) > 1 else None)
         col_c_lat = next((c for c in df_clienti_grezzo.columns if "lat" in str(c).lower()), None)
         col_c_lon = next((c for c in df_clienti_grezzo.columns if "lon" in str(c).lower()), None)
         col_c_comune = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["comune", "città", "citta"])), None)
@@ -66,14 +74,15 @@ if uploaded_file is not None:
             col_c_comune: "COMUNE", col_c_prov: "PROVINCIA"
         }).copy()
 
-        # Pulizia dati venditori (rimozione duplicati e correzione coordinate numeriche enormi)
+        # Pulizia dati venditori
         df_venditori = df_venditori.dropna(subset=["SALES REP"]).drop_duplicates(subset=["SALES REP"]).copy()
         df_venditori["Latitudine"] = df_venditori["Latitudine"].apply(aggiusta_coordinate)
         df_venditori["Longitudine"] = df_venditori["Longitudine"].apply(aggiusta_coordinate)
 
         # Mostra i contatori reali
-        st.columns(2)[0].metric("📊 Clienti Totali Rilevati", f"{len(df_clienti)} anagrafiche")
-        st.columns(2)[1].metric("👤 Venditori Unici Rilevati", f"{len(df_venditori)} sales rep")
+        c1, c2 = st.columns(2)
+        c1.metric("📊 Clienti Totali Rilevati", f"{len(df_clienti)} anagrafiche")
+        c2.metric("👤 Venditori Unici Rilevati", f"{len(df_venditori)} sales rep")
 
         # --- SELEZIONE DINAMICA DEL VOLUME ---
         st.sidebar.subheader("📈 Selezione Parametri Volumi")
