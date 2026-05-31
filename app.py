@@ -293,12 +293,14 @@ def main():
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
 
     # =============================================================================
-    # MATRICE ABC - STRUTTURA ESATTA DALL'IMMAGINE
+    # MATRICE ABC - STRUTTURA 4 COLONNE (da/a/Categoria/Visite)
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
     st.caption("Modifica soglie (da/a) e visite per profilare i clienti sulla colonna volume selezionata")
 
-    # Inizializza la matrice in session_state se non esiste
+    # RESET FORZATO: se la matrice in session state ha colonne vecchie, la sovrascrivo
+    expected_cols = ['da', 'a', 'Categoria', 'Visite anno']
+
     if 'abc_matrix' not in st.session_state:
         st.session_state.abc_matrix = pd.DataFrame({
             'da': [801, 301, 0],
@@ -306,6 +308,16 @@ def main():
             'Categoria': ['A', 'B', 'C'],
             'Visite anno': [24, 12, 1]
         })
+    else:
+        # Verifica che la struttura sia corretta (4 colonne), altrimenti reset
+        existing_cols = list(st.session_state.abc_matrix.columns)
+        if existing_cols != expected_cols:
+            st.session_state.abc_matrix = pd.DataFrame({
+                'da': [801, 301, 0],
+                'a': ['Max', 800, 300],
+                'Categoria': ['A', 'B', 'C'],
+                'Visite anno': [24, 12, 1]
+            })
 
     # data_editor con TUTTE le colonne modificabili (tranne Categoria)
     edited_matrix = st.data_editor(
@@ -319,7 +331,7 @@ def main():
             ),
             'a': st.column_config.TextColumn(
                 label='a',
-                help="Soglia massima. 'Max' per infinito."
+                help="Soglia massima. Scrivi 'Max' per infinito."
             ),
             'Categoria': st.column_config.TextColumn(
                 label='Categoria',
@@ -334,23 +346,30 @@ def main():
         },
         hide_index=True,
         use_container_width=True,
-        key="matrice_abc_editor",
+        key="matrice_abc_v2",  # KEY CAMBIATA per forzare ricreazione
         num_rows="fixed"
     )
 
     # Salva la matrice modificata in session state
     st.session_state.abc_matrix = edited_matrix.copy()
 
-    # Estrazione parametri dalla matrice
+    # Estrazione parametri dalla matrice con gestione errori robusta
     try:
-        da_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'da'].values[0])
-        da_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'da'].values[0])
-        da_c = int(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'da'].values[0])
-        freq_a = int(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Visite anno'].values[0])
-        freq_b = int(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite anno'].values[0])
-        freq_c = int(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite anno'].values[0])
-    except Exception:
-        st.error("❌ Errore nella lettura della matrice. Usa i valori default.")
+        # Ordina per Categoria per sicurezza
+        edited_matrix = edited_matrix.sort_values('Categoria').reset_index(drop=True)
+
+        da_a = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'da'].values[0]))
+        da_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'da'].values[0]))
+        da_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'da'].values[0]))
+        freq_a = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Visite anno'].values[0]))
+        freq_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite anno'].values[0]))
+        freq_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite anno'].values[0]))
+
+        # Validazione: le soglie devono essere coerenti (A > B > C)
+        if not (da_a > da_b > da_c):
+            st.warning("⚠️ Le soglie dovrebbero essere decrescenti: A > B > C")
+    except Exception as e:
+        st.error(f"❌ Errore nella lettura della matrice: {e}. Uso valori default.")
         da_a, da_b, da_c, freq_a, freq_b, freq_c = 801, 301, 0, 24, 12, 1
 
     # Preview distribuzione clienti
@@ -372,8 +391,8 @@ def main():
             with col_prev3:
                 n_c = dist.get('C', 0)
                 st.metric(f"🟢 Classe C (<{da_b:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
-        except:
-            pass
+        except Exception as e:
+            st.caption(f"Preview non disponibile: {e}")
 
     # =============================================================================
     # STATO SESSIONE
