@@ -53,56 +53,62 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media):
     
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
+    
+    # 🔍 FIX CRITICO: Validazione coordinate venditori
+    valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
+    df_v_valid = df_v_act[valid_mask]
+    
+    if len(df_v_valid) == 0:
+        return None, " Errore: Nessun venditore selezionato ha coordinate lat/lon valide."
+    if len(df_v_valid) < len(active_list):
+        missing = set(active_list) - set(df_v_valid['sales rep'])
+        st.warning(f"⚠️ {len(missing)} venditori esclusi dal calcolo perché privi di coordinate: {', '.join(list(missing))}")
+
     df_w = df_c[df_c[col_vol] >= min_vol].copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce')
     df_w = df_w.dropna(subset=[col_vol])
     
     if len(df_w) == 0: return None, "Nessun cliente sopra la soglia minima."
-    if len(active_list) == 0: return None, "Seleziona almeno un venditore."
     
     df_w = classify_abc(df_w, col_vol, thr_a, thr_b)
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
     
-    # Coordinate
-    c_lats = df_w['latitudine'].values
-    c_lons = df_w['longitudine'].values
-    v_lats = df_v_act['latitudine'].values
-    v_lons = df_v_act['longitudine'].values
+    c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
+    v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
+    valid_rep_names = df_v_valid['sales rep'].values
     
     # Matrice distanze
-    dist_matrix = np.zeros((len(c_lats), len(v_lats)))
-    for j in range(len(v_lats)):
+    dist_matrix = np.zeros((len(c_lats), len(v_lons)))
+    for j in range(len(v_lons)):
         dist_matrix[:, j] = haversine_km(c_lons, c_lats, v_lons[j], v_lats[j])
-    
-    # Assegnazione
+        
     idx_min = np.argmin(dist_matrix, axis=1)
     min_dists = np.min(dist_matrix, axis=1)
     
-    df_w['assigned_rep'] = df_v_act.iloc[idx_min]['sales rep'].values
+    df_w['assigned_rep'] = valid_rep_names[idx_min]
     df_w['dist_km'] = min_dists
     
-    # Coordinate venditore per ogni cliente
-    df_w['rep_lat'] = 0.0
-    df_w['rep_lon'] = 0.0
-    for rep in active_list:
-        rep_info = df_v_act[df_v_act['sales rep'] == rep]
-        if len(rep_info) > 0:
-            mask = df_w['assigned_rep'] == rep
-            df_w.loc[mask, 'rep_lat'] = rep_info['latitudine'].iloc[0]
-            df_w.loc[mask, 'rep_lon'] = rep_info['longitudine'].iloc[0]
+    # Coordinate venditore assegnato (per mappa e calcolo raggio)
+    df_w['rep_lat'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
+    df_w['rep_lon'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
+    
+    # DEBUG SICURO (solo colonne esistenti)
+    st.write("🔍 DEBUG DISTRIBUZIONE & STATISTICHE:")
+    st.write(f" Clienti assegnati per venditore:\n{df_w['assigned_rep'].value_counts()}")
+    st.write(f"📏 Shape DataFrame: {df_w.shape}")
+    st.write(f"📉 Statistiche Distanze/Visite:\n{df_w[['dist_km', 'ore_visita_annue']].describe() if 'ore_visita_annue' in df_w.columns else 'N/A'}")
     
     # Frequenze
     freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
     
-    # Calcolo viaggio (Modello Densità)
+    # Calcolo viaggio per venditore (Modello Densità)
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
         if len(sub) > 0:
-            rep_lat = sub['rep_lat'].iloc[0]
-            rep_lon = sub['rep_lon'].iloc[0]
+            rep_lat, rep_lon = sub['rep_lat'].iloc[0], sub['rep_lon'].iloc[0]
             dists = haversine_km(sub['longitudine'], sub['latitudine'], rep_lon, rep_lat)
             max_radius = np.max(dists) if len(dists) > 0 else 0
             avg_dist = max_radius * 0.55
@@ -112,7 +118,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag})
         else:
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0})
-    
+            
     travel_df = pd.DataFrame(travel_data)
     
     # Aggregazione
@@ -130,13 +136,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     max_ore_campo = ore_gg * gg_lavoro
     agg['ore_totali_annue'] = agg['ore_visite_annue'] + agg['ore_viaggio_annue']
     
-    # PROTEZIONE SATURAZIONE (evita divisione per zero o falsi allarmi)
-    agg['saturazione_pct'] = np.where(
-        max_ore_campo > 0, 
-        (agg['ore_totali_annue'] / max_ore_campo) * 100, 
-        0.0
-    )
-    
+    # Protezione saturazione
+    agg['saturazione_pct'] = np.where(max_ore_campo > 0, (agg['ore_totali_annue'] / max_ore_campo) * 100, 0.0)
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
     
@@ -151,13 +152,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, thr_a, thr_b,
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
     result = result.sort_values('saturazione_pct', ascending=False)
     
-    # DEBUG RICHIESTO: Stampa distribuzione e statistiche chiave
-    st.write("🔍 DEBUG DISTRIBUZIONE & STATISTICHE:")
-    st.write(f"📊 Clienti assegnati per venditore:\n{df_w['assigned_rep'].value_counts()}")
-    st.write(f"📏 Shape DataFrame: {df_w.shape}")
-    st.write(f"📉 Statistiche Ore/Distanze:\n{df_w[['dist_km', 'ore_visita_annue', 'ore_viaggio_annue']].describe()}")
-    st.write(f" NaN Coordinate: {df_w[['latitudine', 'longitudine']].isna().sum().to_dict()}")
-    
     return result, df_w
 
 def main():
@@ -165,7 +159,7 @@ def main():
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
     
     with st.sidebar:
-        st.subheader("📁 Dati di Input")
+        st.subheader(" Dati di Input")
         uploaded = st.file_uploader("Carica Excel (Clienti + Venditori)", type=['xlsx'])
         if not uploaded:
             st.info("👆 Carica il file per iniziare")
@@ -182,7 +176,7 @@ def main():
         df_v.columns = [c.strip().lower() for c in df_v.columns]
         
         for col in ['latitudine', 'longitudine', 'sigla']:
-            if col not in df_c.columns: st.error(f"❌ Clienti: manca '{col}'"); return
+            if col not in df_c.columns: st.error(f" Clienti: manca '{col}'"); return
         for col in ['latitudine', 'longitudine', 'sales rep']:
             if col not in df_v.columns: st.error(f"❌ Venditori: manca '{col}'"); return
             
@@ -207,9 +201,9 @@ def main():
             freq_a = st.number_input("Visite/anno - A", 6, 36, 12, 2)
             freq_b = st.number_input("Visite/anno - B", 3, 18, 6, 1)
             freq_c = st.number_input("Visite/anno - C", 1, 6, 3, 1)
-            dur_visita = st.slider("️ Durata visita (min)", 40, 150, 90, 5)
+            dur_visita = st.slider("⏱️ Durata visita (min)", 40, 150, 90, 5)
             
-            ore_gg = st.number_input(" Ore lavorative/giorno", 6.0, 10.0, 8.0, 0.5)
+            ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, 0.5)
             gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, 5)
             st.caption(f"*Capacità annua: {ore_gg * gg_lavoro:,.0f} ore*")
             
@@ -265,7 +259,7 @@ def main():
         
         with col_name:
             nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
-            if st.button(" Salva Scenario", use_container_width=True) and nome_scen:
+            if st.button("💾 Salva Scenario", use_container_width=True) and nome_scen:
                 st.session_state.scenarios[nome_scen] = {
                     'result': res.copy(), 'df_work': df_w.copy(), 'params': params
                 }
@@ -316,16 +310,13 @@ def main():
             'Volume':'{:,.0f}', 'Ore Visite':'{:.1f}', 'Ore Viaggio':'{:.1f}',
             'Ore Totali':'{:.1f}', 'Sat %':'{:.1f}%', 'Min/GG':'{:.1f}', 'Vis/GG':'{:.2f}'
         })
-        st.dataframe(styled, use_container_width=True, hide_index=True)  # FIX: hide_index=True
+        st.dataframe(styled, use_container_width=True, hide_index=True)
         
         st.subheader("️ Mappa Territori")
-        
-        # PULIZIA DATI PER MAPPA (evita crash Plotly su NaN)
         df_map = df_w.dropna(subset=['latitudine', 'longitudine'])
-        st.write(f"📊 Mappa: {len(df_map)} clienti validi su {len(df_w)} totali")
+        st.write(f" Mappa: {len(df_map)} clienti validi su {len(df_w)} totali")
         
         show_hull = st.checkbox("Mostra confini territori", True)
-        
         fig = px.scatter_mapbox(df_map, lat="latitudine", lon="longitudine", color="assigned_rep",
                                 size="freq_visite", size_max=8, zoom=5, height=600, render_mode="webgl")
         if show_hull:
@@ -345,7 +336,7 @@ def main():
         st.plotly_chart(fig, use_container_width=True)
         
         csv = res.to_csv(index=False, sep=';', decimal=',')
-        st.download_button("📥 Esporta CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
+        st.download_button(" Esporta CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
     else:
         st.info("👈 Configura parametri nella sidebar e clicca LANCIA SIMULAZIONE.")
 
