@@ -45,14 +45,16 @@ def classify_abc(df, volume_col, da_a, da_b, da_c):
     A: volume >= da_a
     B: volume >= da_b e volume < da_a
     C: volume >= da_c e volume < da_b
+    Non Attivi: volume < da_c
     """
     df = df.copy()
     conditions = [
         df[volume_col] >= da_a,
         (df[volume_col] >= da_b) & (df[volume_col] < da_a),
-        df[volume_col] < da_b
+        (df[volume_col] >= da_c) & (df[volume_col] < da_b),
+        df[volume_col] < da_c
     ]
-    df['classe'] = np.select(conditions, ['A', 'B', 'C'], default='C')
+    df['classe'] = np.select(conditions, ['A', 'B', 'C', 'Non Attivo'], default='Non Attivo')
     return df
 
 def compute_hull(df, lat_c, lon_c):
@@ -66,11 +68,12 @@ def compute_hull(df, lat_c, lon_c):
     except:
         return None, None
 
-def run_simulation(df_c, df_v, active_list, col_vol, min_vol, da_a, da_b, da_c,
+def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
                    use_nearest_neighbor=False):
     """
     Esegue l'intero calcolo di assegnazione e saturazione.
+    I clienti "Non Attivi" (volume < da_c) sono esclusi dalla simulazione.
     """
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
@@ -87,13 +90,15 @@ def run_simulation(df_c, df_v, active_list, col_vol, min_vol, da_a, da_b, da_c,
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
 
-    if min_vol > 0:
-        df_w = df_w[df_w[col_vol] >= min_vol]
+    # Classifica TUTTI i clienti (inclusi Non Attivi)
+    df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
+
+    # Escludi i Non Attivi dalla simulazione
+    df_w = df_w[df_w['classe'] != 'Non Attivo'].copy()
 
     if len(df_w) == 0:
-        return None, "Nessun cliente sopra la soglia minima."
+        return None, "Nessun cliente attivo sopra la soglia minima C."
 
-    df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
 
     # --- ASSEGNAZIONE CLIENTI ---
@@ -272,10 +277,11 @@ def main():
         # --- PARAMETRI ---
         st.subheader("⚙️ Parametri Simulazione")
 
+        # Selezione colonna volume (unico controllo per definire quale colonna analizzare)
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
 
-        min_vol = st.number_input("🔻 Taglia minima cliente", -1, 100000, -1, step=100)
+        # RIMOSSO: min_vol dalla sidebar. La soglia minima è gestita dalla tabella ABC (riga C, colonna 'da')
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
@@ -293,33 +299,31 @@ def main():
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
 
     # =============================================================================
-    # MATRICE ABC - STRUTTURA 4 COLONNE (da/a/Categoria/Visite)
+    # MATRICE ABC - 4 RIGHE (A, B, C, Non Attivi)
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie (da/a) e visite per profilare i clienti sulla colonna volume selezionata")
+    st.caption("Modifica soglie (da/a) e visite. I clienti sotto la soglia C sono 'Non Attivi' e non vengono serviti.")
 
     # RESET FORZATO: se la matrice in session state ha colonne vecchie, la sovrascrivo
     expected_cols = ['da', 'a', 'Categoria', 'Visite anno']
 
     if 'abc_matrix' not in st.session_state:
         st.session_state.abc_matrix = pd.DataFrame({
-            'da': [801, 301, 0],
-            'a': ['Max', 800, 300],
-            'Categoria': ['A', 'B', 'C'],
-            'Visite anno': [24, 12, 1]
+            'da': [801, 301, 10, 0],
+            'a': ['Max', 800, 300, 9],
+            'Categoria': ['A', 'B', 'C', 'Non Attivi'],
+            'Visite anno': [24, 12, 3, 0]
         })
     else:
-        # Verifica che la struttura sia corretta (4 colonne), altrimenti reset
         existing_cols = list(st.session_state.abc_matrix.columns)
-        if existing_cols != expected_cols:
+        if existing_cols != expected_cols or len(st.session_state.abc_matrix) != 4:
             st.session_state.abc_matrix = pd.DataFrame({
-                'da': [801, 301, 0],
-                'a': ['Max', 800, 300],
-                'Categoria': ['A', 'B', 'C'],
-                'Visite anno': [24, 12, 1]
+                'da': [801, 301, 10, 0],
+                'a': ['Max', 800, 300, 9],
+                'Categoria': ['A', 'B', 'C', 'Non Attivi'],
+                'Visite anno': [24, 12, 3, 0]
             })
 
-    # data_editor con TUTTE le colonne modificabili (tranne Categoria)
     edited_matrix = st.data_editor(
         st.session_state.abc_matrix,
         column_config={
@@ -331,7 +335,7 @@ def main():
             ),
             'a': st.column_config.TextColumn(
                 label='a',
-                help="Soglia massima. Scrivi 'Max' per infinito."
+                help="Soglia massima. 'Max' per infinito."
             ),
             'Categoria': st.column_config.TextColumn(
                 label='Categoria',
@@ -341,56 +345,67 @@ def main():
                 label='Visite anno',
                 step=1, 
                 min_value=0,
-                help="Numero di visite annuali per questa categoria"
+                help="Numero di visite annuali (0 per Non Attivi)"
             )
         },
         hide_index=True,
         use_container_width=True,
-        key="matrice_abc_v2",  # KEY CAMBIATA per forzare ricreazione
+        key="matrice_abc_v3",
         num_rows="fixed"
     )
 
-    # Salva la matrice modificata in session state
     st.session_state.abc_matrix = edited_matrix.copy()
 
-    # Estrazione parametri dalla matrice con gestione errori robusta
+    # Estrazione parametri dalla matrice
     try:
-        # Ordina per Categoria per sicurezza
         edited_matrix = edited_matrix.sort_values('Categoria').reset_index(drop=True)
 
         da_a = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'da'].values[0]))
         da_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'da'].values[0]))
         da_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'da'].values[0]))
+        da_na = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'Non Attivi', 'da'].values[0]))
+
         freq_a = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'A', 'Visite anno'].values[0]))
         freq_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite anno'].values[0]))
         freq_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite anno'].values[0]))
 
-        # Validazione: le soglie devono essere coerenti (A > B > C)
-        if not (da_a > da_b > da_c):
-            st.warning("⚠️ Le soglie dovrebbero essere decrescenti: A > B > C")
+        # La soglia minima globale è il 'da' della classe C (i clienti sotto sono Non Attivi)
+        min_vol = da_c
+
+        if not (da_a > da_b > da_c > da_na):
+            st.warning("⚠️ Le soglie dovrebbero essere decrescenti: A > B > C > Non Attivi")
     except Exception as e:
         st.error(f"❌ Errore nella lettura della matrice: {e}. Uso valori default.")
-        da_a, da_b, da_c, freq_a, freq_b, freq_c = 801, 301, 0, 24, 12, 1
+        da_a, da_b, da_c, da_na = 801, 301, 10, 0
+        freq_a, freq_b, freq_c = 24, 12, 3
+        min_vol = da_c
 
-    # Preview distribuzione clienti
+    # Preview distribuzione clienti con COLORI INVERTITI
     if uploaded:
         try:
             df_preview = df_c.copy()
             df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
             df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
-            dist = df_preview['classe'].value_counts().sort_index()
+            dist = df_preview['classe'].value_counts()
             total = len(df_preview)
+            total_attivi = len(df_preview[df_preview['classe'] != 'Non Attivo'])
 
-            col_prev1, col_prev2, col_prev3 = st.columns(3)
+            # 4 colonne: A (verde), B (giallo), C (rosso), Non Attivi (blu)
+            col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
             with col_prev1:
                 n_a = dist.get('A', 0)
-                st.metric(f"🔴 Classe A (≥{da_a:,})", f"{n_a:,}", f"{n_a/total*100:.1f}%")
+                st.metric(f"🟢 Classe A (≥{da_a:,})", f"{n_a:,}", f"{n_a/total*100:.1f}%")
             with col_prev2:
                 n_b = dist.get('B', 0)
                 st.metric(f"🟡 Classe B ({da_b:,}-{da_a-1:,})", f"{n_b:,}", f"{n_b/total*100:.1f}%")
             with col_prev3:
                 n_c = dist.get('C', 0)
-                st.metric(f"🟢 Classe C (<{da_b:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
+                st.metric(f"🔴 Classe C ({da_c:,}-{da_b-1:,})", f"{n_c:,}", f"{n_c/total*100:.1f}%")
+            with col_prev4:
+                n_na = dist.get('Non Attivo', 0)
+                st.metric(f"🔵 Non Attivi (<{da_c:,})", f"{n_na:,}", f"{n_na/total*100:.1f}%")
+
+            st.caption(f"📊 Clienti attivi (A+B+C): **{total_attivi:,}** su {total:,} totali ({total_attivi/total*100:.1f}%)")
         except Exception as e:
             st.caption(f"Preview non disponibile: {e}")
 
@@ -426,7 +441,7 @@ def main():
                     st.error("⚠️ Seleziona almeno un venditore")
                 else:
                     res, df_w = run_simulation(
-                        df_c, df_v, active_list, col_vol, min_vol, da_a, da_b, da_c,
+                        df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                         freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
                         use_nearest_neighbor=use_nn
                     )
@@ -443,10 +458,11 @@ def main():
                             'dur_visita': dur_visita,
                             'reps': reps,
                             'use_nn': use_nn,
-                            'modo': modo
+                            'modo': modo,
+                            'min_vol': min_vol
                         }
                         st.session_state.current_df_v = df_v
-                        st.success("✅ Simulazione completata!")
+                        st.success(f"✅ Simulazione completata! Clienti sotto {min_vol} esclusi (Non Attivi).")
             except Exception as e:
                 st.error(f"❌ Errore calcolo: {e}")
                 import traceback
@@ -476,7 +492,7 @@ def main():
             overload = len(res[res['saturazione_pct'] > 100])
             st.metric("Venditori Overload", overload, delta_color="inverse")
 
-        st.info(f"📍 Modalità: **{params['modo']}** | " + 
+        st.info(f"📍 Modalità: **{params['modo']}** | Soglia minima: **≥{params.get('min_vol', da_c)}** | " + 
                 ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata con Nearest Neighbor"))
 
         # --- SALVATAGGIO SCENARI ---
