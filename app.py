@@ -42,44 +42,62 @@ if uploaded_file is not None:
         df_clienti_grezzo = pd.read_excel(uploaded_file, sheet_name="clienti_geocodificati")
         df_venditori_grezzo = pd.read_excel(uploaded_file, sheet_name="venditori")
         
-        # 🛡️ ANTI-TRAPPOLA PIVOT: Se i titoli sono slittati in basso a causa dei filtri, li cerchiamo nelle prime 10 righe
-        for i in range(min(10, len(df_venditori_grezzo))):
+        # 🛡️ ANTI-TRAPPOLA PIVOT: Se i titoli sono slittati in basso a causa dei filtri, riallineiamo la tabella
+        for i in range(min(15, len(df_venditori_grezzo))):
             riga_valori = df_venditori_grezzo.iloc[i].astype(str).str.lower().tolist()
-            if any(any(x in str(v) for x in ["etichette", "sales", "rep", "agente", "venditore", "abitazione"]) for v in riga_valori):
-                df_venditori_grezzo.columns = df_venditori_grezzo.iloc[i]
-                df_venditori_grezzo = df_venditori_grezzo.iloc[i+1:].reset_index(drop=True)
+            if any(any(x in str(v) for x in ["etichette", "sales", "rep", "agente", "venditore", "abitazione", "lat", "lon"]) for v in riga_valori):
+                if i > 0:
+                    df_venditori_grezzo.columns = df_venditori_grezzo.iloc[i]
+                    df_venditori_grezzo = df_venditori_grezzo.iloc[i+1:].reset_index(drop=True)
                 break
 
-        # 2. RICONOSCIMENTO AUTOMATICO COLONNE VENDITORI (Con fallback di sicurezza se fallisce)
-        col_v_nome = next((c for c in df_venditori_grezzo.columns if any(x in str(c).lower() for x in ["sales", "rep", "agente", "venditore", "etichette", "row"])), df_venditori_grezzo.columns[0])
-        col_v_lat = next((c for c in df_venditori_grezzo.columns if "lat" in str(c).lower()), df_venditori_grezzo.columns[1] if len(df_venditori_grezzo.columns) > 1 else None)
-        col_v_lon = next((c for c in df_venditori_grezzo.columns if "lon" in str(c).lower()), df_venditori_grezzo.columns[2] if len(df_venditori_grezzo.columns) > 2 else None)
-        col_v_comune = next((c for c in df_venditori_grezzo.columns if any(x in str(c).lower() for x in ["abitazione", "città", "citta", "residenza", "dove", "comune"])), None)
-
-        # 3. RICONOSCIMENTO AUTOMATICO COLONNE CLIENTI
-        col_c_nome = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["sold to name", "ragione", "nome", "cliente"])), df_clienti_grezzo.columns[0])
-        col_c_rep = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["sales", "rep", "agente", "venditore"])), df_clienti_grezzo.columns[1] if len(df_clienti_grezzo.columns) > 1 else None)
-        col_c_lat = next((c for c in df_clienti_grezzo.columns if "lat" in str(c).lower()), None)
-        col_c_lon = next((c for c in df_clienti_grezzo.columns if "lon" in str(c).lower()), None)
-        col_c_comune = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["comune", "città", "citta"])), None)
-        col_c_prov = next((c for c in df_clienti_grezzo.columns if any(x in str(c).lower() for x in ["provincia", "sigla", "prov"])), None)
-
-        # Uniformiamo i fogli rinominandoli internamente
-        df_venditori = df_venditori_grezzo.rename(columns={col_v_nome: "SALES REP", col_v_lat: "Latitudine", col_v_lon: "Longitudine"}).copy()
-        df_venditori["Abitazione"] = df_venditori_grezzo[col_v_comune] if col_v_comune else "Non Specificata"
+        # 2. RICONOSCIMENTO AUTOMATICO VENDITORI PER POSIZIONE (Infallibile, evita i KeyError)
+        df_venditori_grezzo.columns = [str(c).strip() for c in df_venditori_grezzo.columns]
+        v_cols = [c.lower() for c in df_venditori_grezzo.columns]
         
-        df_clienti = df_clienti_grezzo.rename(columns={
-            col_c_nome: "SOLD TO NAME", col_c_rep: "SALES REP", 
-            col_c_lat: "Latitudine", col_c_lon: "Longitudine",
-            col_c_comune: "COMUNE", col_c_prov: "PROVINCIA"
-        }).copy()
+        idx_v_nome = next((i for i, c in enumerate(v_cols) if any(x in c for x in ["sales", "rep", "agente", "venditore", "etichette", "row"])), 0)
+        idx_v_lat = next((i for i, c in enumerate(v_cols) if "lat" in c), 1 if len(v_cols) > 1 else 0)
+        idx_v_lon = next((i for i, c in enumerate(v_cols) if "lon" in c), 2 if len(v_cols) > 2 else 0)
+        idx_v_comune = next((i for i, c in enumerate(v_cols) if any(x in c for x in ["abitazione", "città", "citta", "residenza", "comune"])), -1)
+        
+        # Riassegnazione diretta per indice di posizione
+        nuovi_nomi_v = list(df_venditori_grezzo.columns)
+        nuovi_nomi_v[idx_v_nome] = "SALES REP"
+        if idx_v_lat < len(nuovi_nomi_v): nuovi_nomi_v[idx_v_lat] = "Latitudine"
+        if idx_v_lon < len(nuovi_nomi_v): nuovi_nomi_v[idx_v_lon] = "Longitudine"
+        df_venditori_grezzo.columns = nuovi_nomi_v
+        
+        df_venditori = df_venditori_grezzo.copy()
+        df_venditori["Abitazione"] = df_venditori.iloc[:, idx_v_comune] if idx_v_comune != -1 else "Non Specificata"
 
-        # Pulizia dati venditori
+        # 3. RICONOSCIMENTO AUTOMATICO CLIENTI PER POSIZIONE
+        df_clienti_grezzo.columns = [str(c).strip() for c in df_clienti_grezzo.columns]
+        c_cols = [c.lower() for c in df_clienti_grezzo.columns]
+        
+        idx_c_nome = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["sold to name", "ragione", "nome", "cliente"])), 0)
+        idx_c_rep = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["sales", "rep", "agente", "venditore"])), 1 if len(c_cols) > 1 else 0)
+        idx_c_lat = next((i for i, c in enumerate(c_cols) if "lat" in c), -1)
+        idx_c_lon = next((i for i, c in enumerate(c_cols) if "lon" in c), -1)
+        idx_c_comune = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["comune", "città", "citta"])), -1)
+        idx_c_prov = next((i for i, c in enumerate(c_cols) if any(x in c for x in ["provincia", "sigla", "prov"])), -1)
+        
+        nuovi_nomi_c = list(df_clienti_grezzo.columns)
+        nuovi_nomi_c[idx_c_nome] = "SOLD TO NAME"
+        nuovi_nomi_c[idx_c_rep] = "SALES REP"
+        if idx_c_lat != -1: nuovi_nomi_c[idx_c_lat] = "Latitudine"
+        if idx_c_lon != -1: nuovi_nomi_c[idx_c_lon] = "Longitudine"
+        if idx_c_comune != -1: nuovi_nomi_c[idx_c_comune] = "COMUNE"
+        if idx_c_prov != -1: nuovi_nomi_c[idx_c_prov] = "PROVINCIA"
+        df_clienti_grezzo.columns = nuovi_nomi_c
+        
+        df_clienti = df_clienti_grezzo.copy()
+
+        # Pulizia dati venditori finali
         df_venditori = df_venditori.dropna(subset=["SALES REP"]).drop_duplicates(subset=["SALES REP"]).copy()
         df_venditori["Latitudine"] = df_venditori["Latitudine"].apply(aggiusta_coordinate)
         df_venditori["Longitudine"] = df_venditori["Longitudine"].apply(aggiusta_coordinate)
 
-        # Mostra i contatori reali
+        # Mostra i contatori reali delle righe analizzate
         c1, c2 = st.columns(2)
         c1.metric("📊 Clienti Totali Rilevati", f"{len(df_clienti)} anagrafiche")
         c2.metric("👤 Venditori Unici Rilevati", f"{len(df_venditori)} sales rep")
@@ -124,7 +142,13 @@ if uploaded_file is not None:
                 
         df_ordinato["Distanza_da_Casa_KM"] = distanze
         
-        st.dataframe(df_ordinato[["SALES REP", "SOLD TO NAME", "COMUNE", "PROVINCIA", volume_scelto, "Classe_ABC", "Distanza_da_Casa_KM"]].style.format({"Distanza_da_Casa_KM": "{:.1f} km", volume_scelto: "{:,.0f}"}))
+        # Controllo colonne disponibili per evitare errori visivi
+        colonne_visibili = ["SALES REP", "SOLD TO NAME"]
+        if "COMUNE" in df_ordinato.columns: colonne_visibili.append("COMUNE")
+        if "PROVINCIA" in df_ordinato.columns: colonne_visibili.append("PROVINCIA")
+        colonne_visibili.extend([volume_scelto, "Classe_ABC", "Distanza_da_Casa_KM"])
+        
+        st.dataframe(df_ordinato[colonne_visibili].style.format({"Distanza_da_Casa_KM": "{:.1f} km", volume_scelto: "{:,.0f}"}))
         
         # --- MAPPA INTERATTIVA ---
         st.subheader("🗺️ Mappa Distribuzione Clienti e Venditori")
@@ -134,7 +158,12 @@ if uploaded_file is not None:
         df_venditori["COMUNE"] = df_venditori["Abitazione"]
         df_venditori[volume_scelto] = 0
         
-        mappa_df = pd.concat([df_ordinato[["Latitudine", "Longitudine", "SOLD TO NAME", "COMUNE", "Tipo", volume_scelto]], df_venditori[["Latitudine", "Longitudine", "SOLD TO NAME", "COMUNE", "Tipo", volume_scelto]]]).dropna(subset=["Latitudine", "Longitudine"])
+        if "COMUNE" not in df_ordinato.columns: df_ordinato["COMUNE"] = "N/D"
+        
+        mappa_df = pd.concat([
+            df_ordinato[["Latitudine", "Longitudine", "SOLD TO NAME", "COMUNE", "Tipo", volume_scelto]], 
+            df_venditori[["Latitudine", "Longitudine", "SOLD TO NAME", "COMUNE", "Tipo", volume_scelto]]
+        ]).dropna(subset=["Latitudine", "Longitudine"])
         
         fig = px.scatter_mapbox(mappa_df, lat="Latitudine", lon="Longitudine", color="Tipo", hover_name="SOLD TO NAME", hover_data=["COMUNE", volume_scelto], zoom=5, height=600, color_discrete_map={"Cliente A": "#1f77b4", "Cliente B": "#ff7f0e", "Cliente C": "#d62728", "Venditore (Casa)": "#2ca02c"})
         fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
