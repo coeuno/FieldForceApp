@@ -50,7 +50,6 @@ PROVINCIAL_TORTUOSITY = {
 # FUNZIONI CORE
 # =============================================================================
 def haversine_km(lon1, lat1, lon2, lat2):
-    """Calcola distanza in km tra due punti"""
     lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
     dlon, dlat = lon2 - lon1, lat2 - lat1
     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
@@ -78,72 +77,55 @@ def compute_hull(df, lat_c, lon_c):
     except:
         return None, None
 
-def simulate_daily_routing(rep_customers, rep_home_lat, rep_home_lon, visits_per_day):
+def calculate_travel_km_aggregated(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day, tortuosity_dict):
     """
-    OPZIONE B: Simulazione Greedy Nearest Neighbor
-    Simula le giornate di guida reali per un venditore.
+    STEP 1: Modello Aggregato Density-Aware
+    Stima km/anno basata su distanza media ponderata, dispersione provinciale ed efficienza routing.
     """
-    if len(rep_customers) == 0:
-        return 0.0, 0.0  # km_viaggio, km_visite (visite è 0)
+    if len(df_customers) == 0:
+        return 0.0
 
-    # Preparazione dati
-    custs = rep_customers[['latitudine', 'longitudine', 'freq_visite', 'tortuosity']].copy()
-    custs['remaining_visits'] = custs['freq_visite']
-    custs['index_original'] = custs.index
+    custs = df_customers.copy()
     
-    total_km_viaggio = 0.0
-    total_visite_simulate = 0
+    # 1. Distanze reali base-cliente
+    dists = haversine_km(
+        custs['longitudine'].values, custs['latitudine'].values,
+        rep_home_lon, rep_home_lat
+    )
+    custs['dist_from_home'] = dists
     
-    home_loc = np.array([rep_home_lon, rep_home_lat])
-    
-    # Simula finché ci sono visite da fare
-    while custs['remaining_visits'].sum() > 0:
-        # Inizio giornata
-        current_loc = home_loc
-        day_km_viaggio = 0.0
-        stops_today = 0
+    # 2. Distanza media ponderata per frequenza visite
+    total_visits = custs['freq_visite'].sum()
+    if total_visits == 0:
+        return 0.0
         
-        while stops_today < visits_per_day:
-            # Calcola distanze dal punto corrente a tutti i clienti
-            # Vettorizzazione per velocità
-            lats = custs['latitudine'].values
-            lons = custs['longitudine'].values
-            dists = haversine_km(current_loc[0], current_loc[1], lons, lats)
-            custs['dist_to_current'] = dists
-            
-            # Filtra solo chi ha visite rimanenti
-            eligible = custs[custs['remaining_visits'] > 0].copy()
-            if len(eligible) == 0:
-                break
-            
-            # Trova il più vicino
-            idx_min = eligible['dist_to_current'].idxmin()
-            nearest = eligible.loc[idx_min]
-            
-            # Aggiungi distanza percorsa
-            tortuosita = nearest['tortuosity']
-            day_km_viaggio += nearest['dist_to_current'] * tortuosita
-            
-            # Aggiorna posizione corrente
-            current_loc = np.array([nearest['longitudine'], nearest['latitudine']])
-            
-            # Decrementa visita
-            custs.loc[idx_min, 'remaining_visits'] -= 1
-            stops_today += 1
-            total_visite_simulate += 1
-            
-        # Fine giornata: rientro a casa
-        dist_home = haversine_km(current_loc[0], current_loc[1], home_loc[0], home_loc[1])
-        # Assumiamo tortuosità media per il rientro (1.25 default se non specificato)
-        day_km_viaggio += dist_home * 1.25 
+    dist_media_ponderata = (custs['dist_from_home'] * custs['freq_visite']).sum() / total_visits
+    
+    # 3. Fattore dispersione territoriale (proxy complessità)
+    n_province = custs['sigla'].nunique()
+    if n_province <= 1:
+        fattore_dispersione = 1.00
+    elif n_province == 2:
+        fattore_dispersione = 1.15
+    else:
+        fattore_dispersione = 1.30
         
-        total_km_viaggio += day_km_viaggio
-
-    return total_km_viaggio, total_visite_simulate
+    # 4. Efficienza routing (legge rendimenti decrescenti)
+    # Ogni stop extra oltre il 5° migliora efficienza del 3%, cap a 0.85
+    efficienza = max(0.85, 1.00 - (0.03 * (max_stops_per_day - 5)))
+    
+    # 5. Tortuosità media del territorio coperto
+    avg_tort = custs['sigla'].map(tortuosity_dict).fillna(1.25).mean()
+    
+    # 6. Calcolo finale km/anno
+    # Formula: Visite * DistanzaMedia * 2 (A/R) * Tortuosità * Dispersione / Efficienza
+    km_annui = total_visits * dist_media_ponderata * 2.0 * avg_tort * fattore_dispersione / efficienza
+    
+    return km_annui
 
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
-                   visits_per_day_target, use_nearest_neighbor=False):
+                   max_stops_per_day, use_nearest_neighbor=False):
     
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
@@ -154,7 +136,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     if len(df_v_valid) < len(active_list):
         missing = set(active_list) - set(df_v_valid['sales rep'])
-        st.warning(f"⚠️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
+        st.warning(f"️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
 
     # --- Preparazione clienti ---
     df_w = df_c.copy()
@@ -211,7 +193,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
 
-    # --- CALCOLO VIAGGI (OPZIONE B - SIMULAZIONE) ---
+    # --- CALCOLO VIAGGI (MODELLO AGGREGATO STEP 1) ---
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
@@ -219,19 +201,14 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
             
-            # Esegue la simulazione giornaliera
-            km_totali_simulati, _ = simulate_daily_routing(
-                sub, 
-                rep_lat, 
-                rep_lon, 
-                visits_per_day_target
+            km_totali = calculate_travel_km_aggregated(
+                sub, rep_lat, rep_lon, max_stops_per_day, PROVINCIAL_TORTUOSITY
             )
             
-            # Conversione km -> ore
-            ore_viag = km_totali_simulati / vel_media
-            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag})
+            ore_viag = km_totali / vel_media
+            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
         else:
-            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0})
+            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0, 'km_annui': 0.0})
 
     travel_df = pd.DataFrame(travel_data)
 
@@ -283,7 +260,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # =============================================================================
 def main():
     # =============================================================================
-    # CSS PERSONALIZZATO - FORZA ALLINEAMENTO CENTRALE
+    # CSS PERSONALIZZATO
     # =============================================================================
     st.markdown("""
     <style>
@@ -291,30 +268,16 @@ def main():
         .stDataFrame [data-testid="stDataFrame"] table th,
         div[data-testid="stDataFrame"] table td,
         div[data-testid="stDataFrame"] table th,
-        .dataframe td, 
-        .dataframe th {
-            text-align: center !important;
-            vertical-align: middle !important;
-            justify-content: center !important;
+        .dataframe td, .dataframe th {
+            text-align: center !important; vertical-align: middle !important; justify-content: center !important;
         }
-        
         [data-testid="stMetric"] { text-align: center !important; }
         [data-testid="stMetricValue"] { text-align: center !important; justify-content: center !important; }
         [data-testid="stMetricLabel"] { text-align: center !important; justify-content: center !important; }
-        
         .sidebar-button {
-            position: sticky;
-            top: 10px;
-            z-index: 999;
-            background: white;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
+            position: sticky; top: 10px; z-index: 999; background: white; padding: 10px; border-radius: 5px; margin-bottom: 10px;
         }
-        
-        .stNumberInput > div > div > input {
-            text-align: center !important;
-        }
+        .stNumberInput > div > div > input { text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -324,7 +287,7 @@ def main():
     # --- SIDEBAR ---
     with st.sidebar:
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
-        manual_run = st.button(" LANCIA SIMULAZIONE", type="primary", use_container_width=True)
+        manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.divider()
@@ -356,7 +319,7 @@ def main():
 
         for col in ['latitudine', 'longitudine', 'sigla']:
             if col not in df_c.columns:
-                st.error(f"❌ Clienti: manca colonna '{col}'")
+                st.error(f" Clienti: manca colonna '{col}'")
                 return
         for col in ['latitudine', 'longitudine', 'sales rep']:
             if col not in df_v.columns:
@@ -374,7 +337,7 @@ def main():
 
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
         clienti_con_rep = df_c['sales rep'].notna().sum()
-        st.caption(f" {clienti_con_rep:,} clienti hanno un sales rep assegnato")
+        st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
 
         # --- MODALITÀ ---
@@ -394,21 +357,18 @@ def main():
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
-        ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5, 
-                                 help="Ore totali disponibili (incluse guida e pause)")
+        ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input(" Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
         
-        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=15,
+        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5,
                                  help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
         
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua effettiva: {ore_effettive_gg * gg_lavoro:,.0f} ore (dopo pausa)*")
 
-        vel_media = st.slider("🚗 Velocità media (km/h)", 40, 100, 65, step=5)
-
-        # NUOVO: Visite target per giorno (per routing)
-        visite_target_giorno = st.slider(" Visite target/giorno (per routing)", 3, 10, 5, step=1,
-                                         help="Quanti clienti visita mediamente al giorno? Impatta i km di guida.")
+        vel_media = st.slider("🚗 Velocità media effettiva (km/h)", 40, 100, 65, step=5)
+        max_stops_per_day = st.slider("📦 Max visite/giorno (leva efficienza)", 3, 10, 5, step=1,
+                                      help="Più visite/giorno → routing più ottimizzato → meno km/anno")
 
         # --- VENDITORI ---
         st.subheader("👥 Stato Venditori")
@@ -465,7 +425,7 @@ def main():
 
     min_vol = da_c
     if not (da_a > da_b > da_c >= da_na):
-        st.warning("️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
+        st.warning("⚠️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
 
     # Preview distribuzione clienti
     if uploaded:
@@ -522,16 +482,16 @@ def main():
     if manual_run: run_sim = True
 
     if run_sim:
-        with st.spinner(" Calcolo scenario in corso (Simulazione Routing)..."):
+        with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
             try:
                 active_list = [r for r, s in rep_status.items() if s]
                 if len(active_list) == 0:
-                    st.error("⚠️ Seleziona almeno un venditore")
+                    st.error("️ Seleziona almeno un venditore")
                 else:
                     res, df_w = run_simulation(
                         df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                         freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
-                        visite_target_giorno, use_nearest_neighbor=use_nn
+                        max_stops_per_day, use_nearest_neighbor=use_nn
                     )
                     if res is None:
                         st.error(df_w)
@@ -544,13 +504,14 @@ def main():
                             'gg_lavoro': gg_lavoro,
                             'vel_media': vel_media,
                             'dur_visita': dur_visita,
+                            'max_stops': max_stops_per_day,
                             'reps': reps,
                             'use_nn': use_nn,
                             'modo': modo,
                             'min_vol': min_vol
                         }
                         st.session_state.current_df_v = df_v
-                        st.success(f"✅ Simulazione completata! Clienti sotto {fmt_eu(min_vol, 0)} esclusi.")
+                        st.success(f"✅ Calcolo completato! Modello aggregato attivo.")
             except Exception as e:
                 st.error(f"❌ Errore calcolo: {e}")
                 import traceback
@@ -579,8 +540,7 @@ def main():
             overload = len(res[res['saturazione_pct'] > 100])
             st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload, 0)}</div></div>", unsafe_allow_html=True)
 
-        st.info(f"📍 Modalità: **{params['modo']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c), 0)}** | " + 
-                ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata"))
+        st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c), 0)}**")
 
         # --- SALVATAGGIO SCENARI ---
         col_btn, col_name = st.columns([2, 1])
@@ -595,7 +555,7 @@ def main():
 
         with col_name:
             nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
-            if st.button("💾 Salva Scenario", use_container_width=True) and nome_scen:
+            if st.button(" Salva Scenario", use_container_width=True) and nome_scen:
                 st.session_state.scenarios[nome_scen] = {
                     'result': res.copy(),
                     'df_work': df_w.copy(),
@@ -685,14 +645,14 @@ def main():
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # --- MAPPA ---
-        st.subheader("🗺️ Mappa Territori")
+        st.subheader("🗺️ Mappa Territori Attuali")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
 
         if len(df_map) == 0:
             st.warning("⚠️ Nessun cliente valido da visualizzare sulla mappa.")
         else:
-            st.caption(f"Visualizzati {fmt_eu(len(df_map), 0)} clienti su {fmt_eu(len(df_w), 0)} totali")
-            show_hull = st.checkbox("Mostra confini territori", value=True)
+            st.caption(f"Visualizzati {fmt_eu(len(df_map), 0)} clienti assegnati")
+            show_hull = st.checkbox("Mostra confini territori (Convex Hull)", value=True)
 
             fig = px.scatter_mapbox(
                 df_map,
@@ -755,7 +715,7 @@ def main():
         export_df['modalita'] = params['modo']
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
         st.download_button(
-            " Scarica Report CSV",
+            "📥 Scarica Report CSV",
             csv,
             f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv",
@@ -763,7 +723,7 @@ def main():
         )
 
     else:
-        st.info("👈 Carica il file Excel nella sidebar e clicca ' Lancia Simulazione' per iniziare.")
+        st.info("👈 Carica il file Excel nella sidebar e clicca '🚀 Lancia Simulazione' per iniziare.")
 
 
 if __name__ == "__main__":
