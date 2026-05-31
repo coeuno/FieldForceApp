@@ -25,7 +25,6 @@ def fmt_eu(value, decimals=0, suffix='', prefix=''):
     except:
         return str(value)
 
-
 # =============================================================================
 # CONFIGURAZIONE
 # =============================================================================
@@ -51,6 +50,7 @@ PROVINCIAL_TORTUOSITY = {
 # FUNZIONI CORE
 # =============================================================================
 def haversine_km(lon1, lat1, lon2, lat2):
+    """Calcola distanza in km tra due punti"""
     lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
     dlon, dlat = lon2 - lon1, lat2 - lat1
     a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
@@ -78,9 +78,73 @@ def compute_hull(df, lat_c, lon_c):
     except:
         return None, None
 
+def simulate_daily_routing(rep_customers, rep_home_lat, rep_home_lon, visits_per_day):
+    """
+    OPZIONE B: Simulazione Greedy Nearest Neighbor
+    Simula le giornate di guida reali per un venditore.
+    """
+    if len(rep_customers) == 0:
+        return 0.0, 0.0  # km_viaggio, km_visite (visite è 0)
+
+    # Preparazione dati
+    custs = rep_customers[['latitudine', 'longitudine', 'freq_visite', 'tortuosity']].copy()
+    custs['remaining_visits'] = custs['freq_visite']
+    custs['index_original'] = custs.index
+    
+    total_km_viaggio = 0.0
+    total_visite_simulate = 0
+    
+    home_loc = np.array([rep_home_lon, rep_home_lat])
+    
+    # Simula finché ci sono visite da fare
+    while custs['remaining_visits'].sum() > 0:
+        # Inizio giornata
+        current_loc = home_loc
+        day_km_viaggio = 0.0
+        stops_today = 0
+        
+        while stops_today < visits_per_day:
+            # Calcola distanze dal punto corrente a tutti i clienti
+            # Vettorizzazione per velocità
+            lats = custs['latitudine'].values
+            lons = custs['longitudine'].values
+            dists = haversine_km(current_loc[0], current_loc[1], lons, lats)
+            custs['dist_to_current'] = dists
+            
+            # Filtra solo chi ha visite rimanenti
+            eligible = custs[custs['remaining_visits'] > 0].copy()
+            if len(eligible) == 0:
+                break
+            
+            # Trova il più vicino
+            idx_min = eligible['dist_to_current'].idxmin()
+            nearest = eligible.loc[idx_min]
+            
+            # Aggiungi distanza percorsa
+            tortuosita = nearest['tortuosity']
+            day_km_viaggio += nearest['dist_to_current'] * tortuosita
+            
+            # Aggiorna posizione corrente
+            current_loc = np.array([nearest['longitudine'], nearest['latitudine']])
+            
+            # Decrementa visita
+            custs.loc[idx_min, 'remaining_visits'] -= 1
+            stops_today += 1
+            total_visite_simulate += 1
+            
+        # Fine giornata: rientro a casa
+        dist_home = haversine_km(current_loc[0], current_loc[1], home_loc[0], home_loc[1])
+        # Assumiamo tortuosità media per il rientro (1.25 default se non specificato)
+        day_km_viaggio += dist_home * 1.25 
+        
+        total_km_viaggio += day_km_viaggio
+
+    return total_km_viaggio, total_visite_simulate
+
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
-                   use_nearest_neighbor=False):
+                   visits_per_day_target, use_nearest_neighbor=False):
+    
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
     df_v_valid = df_v_act[valid_mask]
@@ -92,6 +156,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         missing = set(active_list) - set(df_v_valid['sales rep'])
         st.warning(f"⚠️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
 
+    # --- Preparazione clienti ---
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
     df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
@@ -102,6 +167,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     df_w['tortuosity'] = df_w['sigla'].map(PROVINCIAL_TORTUOSITY).fillna(1.25)
 
+    # --- ASSEGNAZIONE CLIENTI ---
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
@@ -140,28 +206,36 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w['rep_lat'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
     df_w['rep_lon'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
 
+    # --- Frequenze e ore visita ---
     freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
     df_w['freq_visite'] = df_w['classe'].map(freq_map)
     df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
 
+    # --- CALCOLO VIAGGI (OPZIONE B - SIMULAZIONE) ---
     travel_data = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
         if len(sub) > 0:
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
-            dists = haversine_km(sub['longitudine'].values, sub['latitudine'].values, rep_lon, rep_lat)
-            max_radius = np.max(dists) if len(dists) > 0 else 0
-            avg_dist = max_radius * 0.55
-            avg_tort = sub['tortuosity'].mean()
-            total_visits = sub['freq_visite'].sum()
-            ore_viag = (total_visits * avg_dist * avg_tort) / vel_media
+            
+            # Esegue la simulazione giornaliera
+            km_totali_simulati, _ = simulate_daily_routing(
+                sub, 
+                rep_lat, 
+                rep_lon, 
+                visits_per_day_target
+            )
+            
+            # Conversione km -> ore
+            ore_viag = km_totali_simulati / vel_media
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag})
         else:
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0})
 
     travel_df = pd.DataFrame(travel_data)
 
+    # --- Aggregazione per venditore ---
     agg = df_w.groupby('assigned_rep').agg(
         n_clienti=('assigned_rep', 'count'),
         n_clienti_uniq=('sold to id', 'nunique'),
@@ -191,7 +265,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         elif s > 100:
             return "🟠 OVERLOAD"
         elif s > 85:
-            return "🟡 ATTENZIONE"
+            return " ATTENZIONE"
         else:
             return "🟢 OK"
 
@@ -213,7 +287,6 @@ def main():
     # =============================================================================
     st.markdown("""
     <style>
-        /* FORZA allineamento centro per TUTTE le tabelle Streamlit */
         .stDataFrame [data-testid="stDataFrame"] table td,
         .stDataFrame [data-testid="stDataFrame"] table th,
         div[data-testid="stDataFrame"] table td,
@@ -225,20 +298,10 @@ def main():
             justify-content: center !important;
         }
         
-        /* Allinea metric al centro */
-        [data-testid="stMetric"] {
-            text-align: center !important;
-        }
-        [data-testid="stMetricValue"] {
-            text-align: center !important;
-            justify-content: center !important;
-        }
-        [data-testid="stMetricLabel"] {
-            text-align: center !important;
-            justify-content: center !important;
-        }
+        [data-testid="stMetric"] { text-align: center !important; }
+        [data-testid="stMetricValue"] { text-align: center !important; justify-content: center !important; }
+        [data-testid="stMetricLabel"] { text-align: center !important; justify-content: center !important; }
         
-        /* Sidebar pulsante fisso in alto */
         .sidebar-button {
             position: sticky;
             top: 10px;
@@ -249,7 +312,6 @@ def main():
             margin-bottom: 10px;
         }
         
-        /* Input fields centrati */
         .stNumberInput > div > div > input {
             text-align: center !important;
         }
@@ -261,9 +323,8 @@ def main():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        # PULSANTE FISSO IN ALTO
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
-        manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
+        manual_run = st.button(" LANCIA SIMULAZIONE", type="primary", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.divider()
@@ -313,7 +374,7 @@ def main():
 
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
         clienti_con_rep = df_c['sales rep'].notna().sum()
-        st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
+        st.caption(f" {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
 
         # --- MODALITÀ ---
@@ -335,7 +396,7 @@ def main():
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5, 
                                  help="Ore totali disponibili (incluse guida e pause)")
-        gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
+        gg_lavoro = st.number_input(" Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
         
         pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=15,
                                  help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
@@ -345,6 +406,10 @@ def main():
 
         vel_media = st.slider("🚗 Velocità media (km/h)", 40, 100, 65, step=5)
 
+        # NUOVO: Visite target per giorno (per routing)
+        visite_target_giorno = st.slider(" Visite target/giorno (per routing)", 3, 10, 5, step=1,
+                                         help="Quanti clienti visita mediamente al giorno? Impatta i km di guida.")
+
         # --- VENDITORI ---
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
@@ -352,12 +417,11 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
     # =============================================================================
-    # MATRICE ABC - INPUT DIRETTI (NO DATA_EDITOR)
+    # MATRICE ABC - INPUT DIRETTI
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
     st.caption("Modifica soglie e visite direttamente nei campi sotto.")
 
-    # Inizializzazione valori default
     if 'abc_values' not in st.session_state:
         st.session_state.abc_values = {
             'da_a': 801, 'a_a': -1, 'freq_a': 24,
@@ -366,7 +430,6 @@ def main():
             'da_na': 0, 'a_na': 9, 'freq_na': 0
         }
 
-    # Layout a griglia con 4 colonne
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -382,7 +445,7 @@ def main():
         freq_b = st.number_input("Visite/anno", key="freq_b", value=st.session_state.abc_values['freq_b'], min_value=0, step=1)
     
     with col3:
-        st.markdown("**🔴 Classe C**")
+        st.markdown("** Classe C**")
         da_c = st.number_input("da ≥", key="da_c", value=st.session_state.abc_values['da_c'], min_value=0, step=1)
         a_c = st.number_input("a <", key="a_c", value=st.session_state.abc_values['a_c'], min_value=-1, step=1)
         freq_c = st.number_input("Visite/anno", key="freq_c", value=st.session_state.abc_values['freq_c'], min_value=0, step=1)
@@ -393,7 +456,6 @@ def main():
         a_na = st.number_input("a <", key="a_na", value=st.session_state.abc_values['a_na'], min_value=-1, step=1)
         freq_na = st.number_input("Visite/anno", key="freq_na", value=st.session_state.abc_values['freq_na'], min_value=0, step=1)
 
-    # Salva valori aggiornati
     st.session_state.abc_values = {
         'da_a': da_a, 'a_a': a_a, 'freq_a': freq_a,
         'da_b': da_b, 'a_b': a_b, 'freq_b': freq_b,
@@ -402,9 +464,8 @@ def main():
     }
 
     min_vol = da_c
-
     if not (da_a > da_b > da_c >= da_na):
-        st.warning("⚠️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
+        st.warning("️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
 
     # Preview distribuzione clienti
     if uploaded:
@@ -416,76 +477,52 @@ def main():
             total = len(df_preview)
             total_attivi = len(df_preview[df_preview['classe'] != 'Non Attivo'])
 
-            # Layout centrato con columns
             col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
             
             with col_prev1:
                 n_a = dist.get('A', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #00ff00; font-size: 24px;'>●</span><br><b>Classe A (≥{fmt_eu(da_a, 0)})</b></div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_a, 0)}</div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_a/total*100:.1f}%</div>", 
-                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center;'><span style='color: #00ff00; font-size: 24px;'>●</span><br><b>Classe A (≥{fmt_eu(da_a, 0)})</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_a, 0)}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_a/total*100:.1f}%</div>", unsafe_allow_html=True)
                 
             with col_prev2:
                 n_b = dist.get('B', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #ffff00; font-size: 24px;'>●</span><br><b>Classe B ({fmt_eu(da_b, 0)}-{fmt_eu(da_a-1, 0)})</b></div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_b, 0)}</div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_b/total*100:.1f}%</div>", 
-                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center;'><span style='color: #ffff00; font-size: 24px;'>●</span><br><b>Classe B ({fmt_eu(da_b, 0)}-{fmt_eu(da_a-1, 0)})</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_b, 0)}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_b/total*100:.1f}%</div>", unsafe_allow_html=True)
                 
             with col_prev3:
                 n_c = dist.get('C', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #ff0000; font-size: 24px;'>●</span><br><b>Classe C ({fmt_eu(da_c, 0)}-{fmt_eu(da_b-1, 0)})</b></div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_c, 0)}</div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_c/total*100:.1f}%</div>", 
-                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center;'><span style='color: #ff0000; font-size: 24px;'>●</span><br><b>Classe C ({fmt_eu(da_c, 0)}-{fmt_eu(da_b-1, 0)})</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_c, 0)}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_c/total*100:.1f}%</div>", unsafe_allow_html=True)
                 
             with col_prev4:
                 n_na = dist.get('Non Attivo', 0)
-                st.markdown(f"<div style='text-align: center;'><span style='color: #0088ff; font-size: 24px;'>●</span><br><b>Non Attivi (<{fmt_eu(da_c, 0)})</b></div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_na, 0)}</div>", 
-                           unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_na/total*100:.1f}%</div>", 
-                           unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center;'><span style='color: #0088ff; font-size: 24px;'>●</span><br><b>Non Attivi (<{fmt_eu(da_c, 0)})</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 36px; font-weight: bold;'>{fmt_eu(n_na, 0)}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: #00ff00;'>↑ {n_na/total*100:.1f}%</div>", unsafe_allow_html=True)
 
-            st.markdown(f"<div style='text-align: center; margin-top: 10px; padding: 10px; background-color: #1e1e1e; border-radius: 5px;'>📊 Clienti attivi (A+B+C): <b>{fmt_eu(total_attivi, 0)}</b> su {fmt_eu(total, 0)} totali ({total_attivi/total*100:.1f}%)</div>", 
-                       unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; margin-top: 10px; padding: 10px; background-color: #1e1e1e; border-radius: 5px;'>📊 Clienti attivi (A+B+C): <b>{fmt_eu(total_attivi, 0)}</b> su {fmt_eu(total, 0)} totali ({total_attivi/total*100:.1f}%)</div>", unsafe_allow_html=True)
         except Exception as e:
             st.caption(f"Preview non disponibile: {e}")
 
     # =============================================================================
-    # STATO SESSIONE
+    # STATO SESSIONE & LOGICA
     # =============================================================================
-    if 'scenarios' not in st.session_state:
-        st.session_state.scenarios = {}
-    if 'current_result' not in st.session_state:
-        st.session_state.current_result = None
-    if 'current_df_work' not in st.session_state:
-        st.session_state.current_df_work = None
-    if 'current_params' not in st.session_state:
-        st.session_state.current_params = {}
+    if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
+    if 'current_result' not in st.session_state: st.session_state.current_result = None
+    if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
+    if 'current_params' not in st.session_state: st.session_state.current_params = {}
 
-    # =============================================================================
-    # LOGICA DI LANCIO
-    # =============================================================================
     run_sim = False
-
     if st.session_state.get('trigger_auto_run', False):
         st.session_state.trigger_auto_run = False
         run_sim = True
-
-    if manual_run:
-        run_sim = True
+    if manual_run: run_sim = True
 
     if run_sim:
-        with st.spinner("⚡ Calcolo scenario in corso..."):
+        with st.spinner(" Calcolo scenario in corso (Simulazione Routing)..."):
             try:
                 active_list = [r for r, s in rep_status.items() if s]
                 if len(active_list) == 0:
@@ -494,7 +531,7 @@ def main():
                     res, df_w = run_simulation(
                         df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                         freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
-                        use_nearest_neighbor=use_nn
+                        visite_target_giorno, use_nearest_neighbor=use_nn
                     )
                     if res is None:
                         st.error(df_w)
@@ -513,7 +550,7 @@ def main():
                             'min_vol': min_vol
                         }
                         st.session_state.current_df_v = df_v
-                        st.success(f"✅ Simulazione completata! Clienti sotto {fmt_eu(min_vol, 0)} esclusi (Non Attivi).")
+                        st.success(f"✅ Simulazione completata! Clienti sotto {fmt_eu(min_vol, 0)} esclusi.")
             except Exception as e:
                 st.error(f"❌ Errore calcolo: {e}")
                 import traceback
@@ -528,27 +565,22 @@ def main():
         params = st.session_state.current_params
         df_v_curr = st.session_state.get('current_df_v', df_v)
 
-        # --- KPI ---
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']), 0)}</div></div>", 
-                       unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']), 0)}</div></div>", unsafe_allow_html=True)
         with col2:
             total_customers = int(res['n_clienti'].sum())
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti (Righe)</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers, 0)}</div></div>", 
-                       unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti (Righe)</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers, 0)}</div></div>", unsafe_allow_html=True)
         with col3:
             avg_sat = res['saturazione_pct'].mean()
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", 
-                       unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", unsafe_allow_html=True)
         with col4:
             overload = len(res[res['saturazione_pct'] > 100])
-            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload, 0)}</div></div>", 
-                       unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload, 0)}</div></div>", unsafe_allow_html=True)
 
         st.info(f"📍 Modalità: **{params['modo']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c), 0)}** | " + 
-                ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata con Nearest Neighbor"))
+                ("Assegnazione dal file clienti" if not params['use_nn'] else "Assegnazione ricalcolata"))
 
         # --- SALVATAGGIO SCENARI ---
         col_btn, col_name = st.columns([2, 1])
@@ -586,17 +618,14 @@ def main():
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         delta_v = len(other['result']) - len(base['result'])
-                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori</div><div style='font-size: 24px; font-weight: bold;'>{fmt_eu(len(base['result']), 0)} → {fmt_eu(len(other['result']), 0)}</div><div style='color: {'red' if delta_v < 0 else 'green'}; font-size: 18px;'>{'↓' if delta_v < 0 else '↑'} {fmt_eu(abs(delta_v), 0)}</div></div>", 
-                                   unsafe_allow_html=True)
+                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori</div><div style='font-size: 24px; font-weight: bold;'>{fmt_eu(len(base['result']), 0)} → {fmt_eu(len(other['result']), 0)}</div><div style='color: {'red' if delta_v < 0 else 'green'}; font-size: 18px;'>{'↓' if delta_v < 0 else '↑'} {fmt_eu(abs(delta_v), 0)}</div></div>", unsafe_allow_html=True)
                     with c2:
-                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti</div><div style='font-size: 24px; font-weight: bold;'>{fmt_eu(int(base['result']['n_clienti'].sum()), 0)} → {fmt_eu(int(other['result']['n_clienti'].sum()), 0)}</div></div>", 
-                                   unsafe_allow_html=True)
+                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti</div><div style='font-size: 24px; font-weight: bold;'>{fmt_eu(int(base['result']['n_clienti'].sum()), 0)} → {fmt_eu(int(other['result']['n_clienti'].sum()), 0)}</div></div>", unsafe_allow_html=True)
                     with c3:
                         base_sat = base['result']['saturazione_pct'].mean()
                         other_sat = other['result']['saturazione_pct'].mean()
                         delta_sat = other_sat - base_sat
-                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Sat. Media</div><div style='font-size: 24px; font-weight: bold;'>{base_sat:.1f}% → {other_sat:.1f}%</div><div style='color: {'red' if delta_sat > 5 else 'green' if delta_sat < -5 else 'orange'}; font-size: 18px;'>{'↑' if delta_sat > 0 else '↓'} {abs(delta_sat):.1f}%</div></div>", 
-                                   unsafe_allow_html=True)
+                        st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Sat. Media</div><div style='font-size: 24px; font-weight: bold;'>{base_sat:.1f}% → {other_sat:.1f}%</div><div style='color: {'red' if delta_sat > 5 else 'green' if delta_sat < -5 else 'orange'}; font-size: 18px;'>{'↑' if delta_sat > 0 else '↓'} {abs(delta_sat):.1f}%</div></div>", unsafe_allow_html=True)
 
                     df_base = base['result'].set_index('sales_rep')
                     df_other = other['result'].set_index('sales_rep')
@@ -642,21 +671,15 @@ def main():
         disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
 
         def color_sat(v):
-            if pd.isna(v):
-                return ''
+            if pd.isna(v): return ''
             try:
                 clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
                 n = float(clean)
-                if n > 110:
-                    return 'background-color:#ffcdd2;color:#b71c1c'
-                elif n > 100:
-                    return 'background-color:#ffe0b2;color:#e65100'
-                elif n > 85:
-                    return 'background-color:#fff9c4;color:#f57f17'
-                else:
-                    return 'background-color:#c8e6c9;color:#1b5e20'
-            except:
-                return ''
+                if n > 110: return 'background-color:#ffcdd2;color:#b71c1c'
+                elif n > 100: return 'background-color:#ffe0b2;color:#e65100'
+                elif n > 85: return 'background-color:#fff9c4;color:#f57f17'
+                else: return 'background-color:#c8e6c9;color:#1b5e20'
+            except: return ''
 
         styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -682,11 +705,7 @@ def main():
                 height=600,
                 opacity=0.8,
                 hover_name="assigned_rep",
-                hover_data={
-                    "classe": True,
-                    "freq_visite": True,
-                    "dist_km": ":.1f"
-                }
+                hover_data={"classe": True, "freq_visite": True, "dist_km": ":.1f"}
             )
 
             if show_hull:
@@ -724,14 +743,7 @@ def main():
             fig.update_layout(
                 mapbox_style="open-street-map",
                 margin={"r": 0, "t": 30, "l": 0, "b": 0},
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1,
-                    bgcolor='rgba(255,255,255,0.8)'
-                )
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor='rgba(255,255,255,0.8)')
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -743,7 +755,7 @@ def main():
         export_df['modalita'] = params['modo']
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
         st.download_button(
-            "📥 Scarica Report CSV",
+            " Scarica Report CSV",
             csv,
             f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv",
@@ -751,7 +763,7 @@ def main():
         )
 
     else:
-        st.info("👈 Carica il file Excel nella sidebar e clicca '🚀 Lancia Simulazione' per iniziare.")
+        st.info("👈 Carica il file Excel nella sidebar e clicca ' Lancia Simulazione' per iniziare.")
 
 
 if __name__ == "__main__":
