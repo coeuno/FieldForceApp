@@ -225,7 +225,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     def get_alert(s):
         if s > 110: return "🔴 CRITICO"
         elif s > 100: return "🟠 OVERLOAD"
-        elif s > 85: return " ATTENZIONE"
+        elif s > 85: return "️ ATTENZIONE"
         else: return "🟢 OK"
 
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
@@ -265,11 +265,11 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
         st.divider()
         
-        st.subheader(" Dati di Input")
+        st.subheader("📁 Dati di Input")
         uploaded = st.file_uploader("Carica Excel (Clienti + Venditori)", type=['xlsx'])
 
         if not uploaded:
-            st.info("👆 Carica il file per iniziare")
+            st.info(" Carica il file per iniziare")
             return
 
         file_signature = f"{uploaded.name}_{uploaded.size}"
@@ -329,15 +329,15 @@ def main():
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
-        gg_lavoro = st.number_input(" Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
+        gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
         
-        pausa_pranzo = st.slider(" Pausa pranzo (min/giorno)", 0, 120, 60, step=5,
+        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5,
                                  help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
         
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua effettiva: {ore_effettive_gg * gg_lavoro:,.0f} ore (dopo pausa)*")
 
-        vel_media = st.slider(" Velocità media effettiva (km/h)", 40, 100, 65, step=5)
+        vel_media = st.slider("🚗 Velocità media effettiva (km/h)", 40, 100, 65, step=5)
         max_stops_per_day = st.slider("📦 Max visite/giorno (leva efficienza)", 3, 10, 5, step=1,
                                       help="Più visite/giorno → routing più ottimizzato → meno km/anno")
 
@@ -349,7 +349,7 @@ def main():
     # =============================================================================
     # MATRICE ABC
     # =============================================================================
-    st.subheader(" Matrice Classificazione ABC & Frequenze")
+    st.subheader("📊 Matrice Classificazione ABC & Frequenze")
     st.caption("Modifica soglie e visite direttamente nei campi sotto.")
 
     if 'abc_values' not in st.session_state:
@@ -362,15 +362,15 @@ def main():
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown("** Classe A**")
+        st.markdown("**🟢 Classe A**")
         da_a = st.number_input("da ≥", key="da_a", value=st.session_state.abc_values['da_a'], min_value=0, step=1)
         freq_a = st.number_input("Visite/anno", key="freq_a", value=st.session_state.abc_values['freq_a'], min_value=0, step=1)
     with col2:
-        st.markdown("** Classe B**")
+        st.markdown("**🟡 Classe B**")
         da_b = st.number_input("da ≥", key="da_b", value=st.session_state.abc_values['da_b'], min_value=0, step=1)
         freq_b = st.number_input("Visite/anno", key="freq_b", value=st.session_state.abc_values['freq_b'], min_value=0, step=1)
     with col3:
-        st.markdown("** Classe C**")
+        st.markdown("**🔴 Classe C**")
         da_c = st.number_input("da ≥", key="da_c", value=st.session_state.abc_values['da_c'], min_value=0, step=1)
         freq_c = st.number_input("Visite/anno", key="freq_c", value=st.session_state.abc_values['freq_c'], min_value=0, step=1)
     with col4:
@@ -426,11 +426,11 @@ def main():
     if manual_run: run_sim = True
 
     if run_sim:
-        with st.spinner(" Calcolo scenario Density-Aware in corso..."):
+        with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
             try:
                 active_list = [r for r, s in rep_status.items() if s]
                 if len(active_list) == 0:
-                    st.error("⚠️ Seleziona almeno un venditore")
+                    st.error("️ Seleziona almeno un venditore")
                 else:
                     res, df_w = run_simulation(
                         df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
@@ -487,7 +487,7 @@ def main():
                 st.success("✅ Baseline salvata!")
         with col_name:
             nome_scen = st.text_input("Nome nuovo scenario", placeholder="Es. 19 Agenti")
-            if st.button(" Salva Scenario", use_container_width=True) and nome_scen:
+            if st.button("💾 Salva Scenario", use_container_width=True) and nome_scen:
                 st.session_state.scenarios[nome_scen] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
                 st.success(f"✅ '{nome_scen}' salvato!")
 
@@ -523,9 +523,9 @@ def main():
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # =============================================================================
-        # MAPPA (VERSIONE GEOMETRICA / POLIGONI)
+        # MAPPA (VERSIONE GEOMETRICA / POLIGONI TRASPARENTI + ZOOM ITALIA)
         # =============================================================================
-        st.subheader("️ Mappa Zone e Distribuzione Clienti")
+        st.subheader("🗺️ Mappa Zone e Distribuzione Clienti")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
 
         if len(df_map) == 0:
@@ -534,7 +534,6 @@ def main():
             st.caption(f"Visualizzati {fmt_eu(len(df_map), 0)} clienti")
             
             # 1. Disegna i POLIGONI (Zone dei venditori)
-            # Usiamo Convex Hull per creare un perimetro per ogni venditore
             fig = go.Figure()
             
             # Mappa colori per venditori (palette qualitativa)
@@ -546,14 +545,15 @@ def main():
                 if len(sub) >= 3:
                     lon_h, lat_h = compute_hull_coords(sub)
                     if lon_h is not None:
+                        # Poligono trasparente (opacity 0.15)
                         fig.add_trace(go.Scattermapbox(
                             mode='lines',
                             lon=lon_h,
                             lat=lat_h,
-                            line=dict(width=2, color=rep_colors[rep]),
+                            line=dict(width=1, color=rep_colors[rep]),
                             fill='toself',
                             fillcolor=rep_colors[rep],
-                            opacity=0.15,  # Area trasparente
+                            opacity=0.15,  # ️ ALTA TRASPARENZA
                             name=f"Zona {rep}",
                             showlegend=True,
                             hoverinfo='name'
@@ -608,9 +608,11 @@ def main():
                     hoverinfo='name'
                 ))
 
-            # Layout con Legenda in basso
+            # Layout con Legenda in basso e ZOOM ITALIA
             fig.update_layout(
                 mapbox_style="open-street-map",
+                mapbox_zoom=5.5,  # ⬅️ ZOOM PRE-IMPOSTATO ITALIA
+                mapbox_center=dict(lat=42.5, lon=12.5), # ⬅️ CENTRO ITALIA
                 margin=dict(r=0, t=30, l=0, b=100),  # Spazio extra sotto per la legenda
                 legend=dict(
                     orientation="h",
@@ -632,7 +634,7 @@ def main():
         export_df['modalita'] = params['modo']
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
         st.download_button(
-            "📥 Scarica Report CSV",
+            " Scarica Report CSV",
             csv,
             f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv",
@@ -640,7 +642,7 @@ def main():
         )
 
     else:
-        st.info(" Carica il file Excel nella sidebar e clicca '🚀 Lancia Simulazione' per iniziare.")
+        st.info("👈 Carica il file Excel nella sidebar e clicca ' Lancia Simulazione' per iniziare.")
 
 
 if __name__ == "__main__":
