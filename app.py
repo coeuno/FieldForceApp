@@ -13,9 +13,6 @@ st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="w
 # HELPER: FORMATTAZIONE EUROPEA NUMERI
 # =============================================================================
 def fmt_eu(value, decimals=0, suffix='', prefix=''):
-    """
-    Formatta un numero con separatore migliaia europeo (.) e decimale (,)
-    """
     if pd.isna(value):
         return ''
     try:
@@ -212,15 +209,20 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # =============================================================================
 def main():
     # =============================================================================
-    # CSS PERSONALIZZATO - AGGRESSIVO PER ALLINEAMENTO CENTRALE
+    # CSS PERSONALIZZATO - FORZA ALLINEAMENTO CENTRALE
     # =============================================================================
     st.markdown("""
     <style>
-        /* FORZA allineamento centro per TUTTE le tabelle */
-        .dataframe td, .dataframe th {
+        /* FORZA allineamento centro per TUTTE le tabelle Streamlit */
+        .stDataFrame [data-testid="stDataFrame"] table td,
+        .stDataFrame [data-testid="stDataFrame"] table th,
+        div[data-testid="stDataFrame"] table td,
+        div[data-testid="stDataFrame"] table th,
+        .dataframe td, 
+        .dataframe th {
             text-align: center !important;
             vertical-align: middle !important;
-            padding: 8px !important;
+            justify-content: center !important;
         }
         
         /* Allinea metric al centro */
@@ -247,18 +249,8 @@ def main():
             margin-bottom: 10px;
         }
         
-        /* Editor dati centrato */
-        .stDataFrame table td {
-            text-align: center !important;
-        }
-        
-        /* Migliora leggibilità */
-        .dataframe {
-            font-size: 0.9rem !important;
-        }
-        
-        /* Centra tutti i testi */
-        div[data-testid="stMarkdown"], div[data-testid="stMarkdownContainer"] {
+        /* Input fields centrati */
+        .stNumberInput > div > div > input {
             text-align: center !important;
         }
     </style>
@@ -269,7 +261,7 @@ def main():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        # PULSANTE FISSO IN ALTO (sempre visibile)
+        # PULSANTE FISSO IN ALTO
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -345,7 +337,6 @@ def main():
                                  help="Ore totali disponibili (incluse guida e pause)")
         gg_lavoro = st.number_input("📅 Giorni lavorativi/anno (netti)", 180, 260, 220, step=5)
         
-        # NUOVO: Pausa pranzo
         pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=15,
                                  help="Tempo sottratto dalle ore lavorative per la pausa pranzo")
         
@@ -361,98 +352,61 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
     # =============================================================================
-    # MATRICE ABC - VERSIONE REVISIONATA CON CALLBACK
+    # MATRICE ABC - INPUT DIRETTI (NO DATA_EDITOR)
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie e visite. I cambiamenti richiedono di cliccare 'Lancia Simulazione'.")
+    st.caption("Modifica soglie e visite direttamente nei campi sotto.")
 
-    # Inizializzazione matrice
-    if 'abc_matrix' not in st.session_state:
-        st.session_state.abc_matrix = pd.DataFrame({
-            'da': [801, 301, 10, 0],
-            'a': [-1, 800, 300, 9],
-            'Categoria': ['A', 'B', 'C', 'Non Attivi'],
-            'Visite anno': [24, 12, 3, 0]
-        })
+    # Inizializzazione valori default
+    if 'abc_values' not in st.session_state:
+        st.session_state.abc_values = {
+            'da_a': 801, 'a_a': -1, 'freq_a': 24,
+            'da_b': 301, 'a_b': 800, 'freq_b': 12,
+            'da_c': 10, 'a_c': 300, 'freq_c': 3,
+            'da_na': 0, 'a_na': 9, 'freq_na': 0
+        }
+
+    # Layout a griglia con 4 colonne
+    col1, col2, col3, col4 = st.columns(4)
     
-    if 'abc_matrix_counter' not in st.session_state:
-        st.session_state.abc_matrix_counter = 0
+    with col1:
+        st.markdown("**🟢 Classe A**")
+        da_a = st.number_input("da ≥", key="da_a", value=st.session_state.abc_values['da_a'], min_value=0, step=1)
+        a_a = st.number_input("a <", key="a_a", value=st.session_state.abc_values['a_a'], min_value=-1, step=1)
+        freq_a = st.number_input("Visite/anno", key="freq_a", value=st.session_state.abc_values['freq_a'], min_value=0, step=1)
+    
+    with col2:
+        st.markdown("**🟡 Classe B**")
+        da_b = st.number_input("da ≥", key="da_b", value=st.session_state.abc_values['da_b'], min_value=0, step=1)
+        a_b = st.number_input("a <", key="a_b", value=st.session_state.abc_values['a_b'], min_value=-1, step=1)
+        freq_b = st.number_input("Visite/anno", key="freq_b", value=st.session_state.abc_values['freq_b'], min_value=0, step=1)
+    
+    with col3:
+        st.markdown("**🔴 Classe C**")
+        da_c = st.number_input("da ≥", key="da_c", value=st.session_state.abc_values['da_c'], min_value=0, step=1)
+        a_c = st.number_input("a <", key="a_c", value=st.session_state.abc_values['a_c'], min_value=-1, step=1)
+        freq_c = st.number_input("Visite/anno", key="freq_c", value=st.session_state.abc_values['freq_c'], min_value=0, step=1)
+    
+    with col4:
+        st.markdown("**🔵 Non Attivi**")
+        da_na = st.number_input("da ≥", key="da_na", value=st.session_state.abc_values['da_na'], min_value=0, step=1)
+        a_na = st.number_input("a <", key="a_na", value=st.session_state.abc_values['a_na'], min_value=-1, step=1)
+        freq_na = st.number_input("Visite/anno", key="freq_na", value=st.session_state.abc_values['freq_na'], min_value=0, step=1)
 
-    # Callback per forzare aggiornamento
-    def update_abc_matrix():
-        st.session_state.abc_matrix_counter += 1
-        st.session_state.abc_needs_update = True
+    # Salva valori aggiornati
+    st.session_state.abc_values = {
+        'da_a': da_a, 'a_a': a_a, 'freq_a': freq_a,
+        'da_b': da_b, 'a_b': a_b, 'freq_b': freq_b,
+        'da_c': da_c, 'a_c': a_c, 'freq_c': freq_c,
+        'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na
+    }
 
-    # Editor con key dinamica per forzare refresh
-    edited_matrix = st.data_editor(
-        st.session_state.abc_matrix.copy(),
-        column_config={
-            'da': st.column_config.NumberColumn(
-                'da ≥',
-                help="Soglia minima inclusiva",
-                min_value=0,
-                step=1,
-                format="%d",
-                width="small"
-            ),
-            'a': st.column_config.NumberColumn(
-                'a <',
-                help="-1 = Max (nessun limite superiore)",
-                min_value=-1,
-                step=1,
-                format="%d",
-                width="small"
-            ),
-            'Categoria': st.column_config.TextColumn(
-                'Categoria',
-                disabled=True,
-                width="medium"
-            ),
-            'Visite anno': st.column_config.NumberColumn(
-                'Visite/anno',
-                help="0 = non visitato",
-                min_value=0,
-                step=1,
-                format="%d",
-                width="small"
-            ),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key=f"abc_matrix_editor_{st.session_state.abc_matrix_counter}",
-        num_rows="fixed",
-        disabled=["Categoria"],
-        on_change=update_abc_matrix
-    )
+    min_vol = da_c
 
-    # Salva solo se diverso
-    if not edited_matrix.equals(st.session_state.abc_matrix):
-        st.session_state.abc_matrix = edited_matrix.copy()
+    if not (da_a > da_b > da_c >= da_na):
+        st.warning("⚠️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
 
-    # Estrazione parametri
-    try:
-        edited_matrix_sorted = edited_matrix.sort_values('Categoria').reset_index(drop=True)
-
-        da_a = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'A', 'da'].values[0]))
-        da_b = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'B', 'da'].values[0]))
-        da_c = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'C', 'da'].values[0]))
-        da_na = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'Non Attivi', 'da'].values[0]))
-
-        freq_a = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'A', 'Visite anno'].values[0]))
-        freq_b = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'B', 'Visite anno'].values[0]))
-        freq_c = int(float(edited_matrix_sorted.loc[edited_matrix_sorted['Categoria'] == 'C', 'Visite anno'].values[0]))
-
-        min_vol = da_c
-
-        if not (da_a > da_b > da_c >= da_na):
-            st.warning("⚠️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
-    except Exception as e:
-        st.error(f"❌ Errore nella lettura della matrice: {e}. Uso valori default.")
-        da_a, da_b, da_c, da_na = 801, 301, 10, 0
-        freq_a, freq_b, freq_c = 24, 12, 3
-        min_vol = da_c
-
-    # Preview distribuzione clienti (si aggiorna SEMPRE in tempo reale)
+    # Preview distribuzione clienti
     if uploaded:
         try:
             df_preview = df_c.copy()
@@ -529,11 +483,6 @@ def main():
 
     if manual_run:
         run_sim = True
-        st.session_state.abc_needs_update = False
-
-    # Warning se matrice cambiata ma non lanciata simulazione
-    if st.session_state.get('abc_needs_update', False) and not run_sim:
-        st.warning("⚠️ **Matrice ABC modificata!** Clicca '🚀 Lancia Simulazione' per aggiornare i risultati.")
 
     if run_sim:
         with st.spinner("⚡ Calcolo scenario in corso..."):
@@ -565,7 +514,6 @@ def main():
                         }
                         st.session_state.current_df_v = df_v
                         st.success(f"✅ Simulazione completata! Clienti sotto {fmt_eu(min_vol, 0)} esclusi (Non Attivi).")
-                        st.session_state.abc_needs_update = False
             except Exception as e:
                 st.error(f"❌ Errore calcolo: {e}")
                 import traceback
