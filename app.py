@@ -277,11 +277,8 @@ def main():
         # --- PARAMETRI ---
         st.subheader("⚙️ Parametri Simulazione")
 
-        # Selezione colonna volume (unico controllo per definire quale colonna analizzare)
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
-
-        # RIMOSSO: min_vol dalla sidebar. La soglia minima è gestita dalla tabella ABC (riga C, colonna 'da')
 
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
@@ -299,18 +296,17 @@ def main():
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
 
     # =============================================================================
-    # MATRICE ABC - 4 RIGHE (A, B, C, Non Attivi)
+    # MATRICE ABC - SOLO NUMERI, TUTTO EDITABILE
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie (da/a) e visite. I clienti sotto la soglia C sono 'Non Attivi' e non vengono serviti.")
+    st.caption("Modifica soglie (da/a) e visite. 'a' = -1 significa 'Max' (infinito). I clienti sotto la soglia C sono 'Non Attivi'.")
 
-    # RESET FORZATO: se la matrice in session state ha colonne vecchie, la sovrascrivo
     expected_cols = ['da', 'a', 'Categoria', 'Visite anno']
 
     if 'abc_matrix' not in st.session_state:
         st.session_state.abc_matrix = pd.DataFrame({
             'da': [801, 301, 10, 0],
-            'a': ['Max', 800, 300, 9],
+            'a': [-1, 800, 300, 9],
             'Categoria': ['A', 'B', 'C', 'Non Attivi'],
             'Visite anno': [24, 12, 3, 0]
         })
@@ -319,44 +315,47 @@ def main():
         if existing_cols != expected_cols or len(st.session_state.abc_matrix) != 4:
             st.session_state.abc_matrix = pd.DataFrame({
                 'da': [801, 301, 10, 0],
-                'a': ['Max', 800, 300, 9],
+                'a': [-1, 800, 300, 9],
                 'Categoria': ['A', 'B', 'C', 'Non Attivi'],
                 'Visite anno': [24, 12, 3, 0]
             })
 
+    # TUTTE colonne numeriche per evitare problemi di editing testo
     edited_matrix = st.data_editor(
         st.session_state.abc_matrix,
         column_config={
             'da': st.column_config.NumberColumn(
-                label='da',
+                label='da ≥',
                 step=1, 
                 min_value=0,
-                help="Soglia minima (inclusiva) per questa categoria"
+                help="Soglia minima inclusiva"
             ),
-            'a': st.column_config.TextColumn(
-                label='a',
-                help="Soglia massima. 'Max' per infinito."
+            'a': st.column_config.NumberColumn(
+                label='a <',
+                step=1, 
+                min_value=-1,
+                help="-1 = Max (nessun limite superiore)"
             ),
             'Categoria': st.column_config.TextColumn(
                 label='Categoria',
                 disabled=True
             ),
             'Visite anno': st.column_config.NumberColumn(
-                label='Visite anno',
+                label='Visite/anno',
                 step=1, 
                 min_value=0,
-                help="Numero di visite annuali (0 per Non Attivi)"
+                help="0 = non visitato"
             )
         },
         hide_index=True,
         use_container_width=True,
-        key="matrice_abc_v3",
+        key="matrice_abc_v4",
         num_rows="fixed"
     )
 
     st.session_state.abc_matrix = edited_matrix.copy()
 
-    # Estrazione parametri dalla matrice
+    # Estrazione parametri
     try:
         edited_matrix = edited_matrix.sort_values('Categoria').reset_index(drop=True)
 
@@ -369,11 +368,10 @@ def main():
         freq_b = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'B', 'Visite anno'].values[0]))
         freq_c = int(float(edited_matrix.loc[edited_matrix['Categoria'] == 'C', 'Visite anno'].values[0]))
 
-        # La soglia minima globale è il 'da' della classe C (i clienti sotto sono Non Attivi)
         min_vol = da_c
 
-        if not (da_a > da_b > da_c > da_na):
-            st.warning("⚠️ Le soglie dovrebbero essere decrescenti: A > B > C > Non Attivi")
+        if not (da_a > da_b > da_c >= da_na):
+            st.warning("⚠️ Le soglie dovrebbero essere: A > B > C ≥ Non Attivi")
     except Exception as e:
         st.error(f"❌ Errore nella lettura della matrice: {e}. Uso valori default.")
         da_a, da_b, da_c, da_na = 801, 301, 10, 0
@@ -390,7 +388,6 @@ def main():
             total = len(df_preview)
             total_attivi = len(df_preview[df_preview['classe'] != 'Non Attivo'])
 
-            # 4 colonne: A (verde), B (giallo), C (rosso), Non Attivi (blu)
             col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
             with col_prev1:
                 n_a = dist.get('A', 0)
