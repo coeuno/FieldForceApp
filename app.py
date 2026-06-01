@@ -270,9 +270,12 @@ def main():
             st.error("❌ Colonna 'sales rep' mancante nel foglio clienti.")
             return
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
+        clienti_con_rep = df_c['sales rep'].notna().sum()
+        st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
         st.subheader("🎮 Modalità")
-        modo = st.radio("Scegli modalità:", ["📍 Mappa Attuale (Assegnazione Reale)", "🔄 Simula Downsizing (Nearest Neighbor)"], index=0)
+        modo = st.radio("Scegli modalità:",
+            ["📍 Mappa Attuale (Assegnazione Reale)", "🔄 Simula Downsizing (Nearest Neighbor)"], index=0)
         use_nn = (modo == "🔄 Simula Downsizing (Nearest Neighbor)")
         st.divider()
         st.subheader("⚙️ Parametri Simulazione")
@@ -291,31 +294,45 @@ def main():
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
+        # =============================================================================
+        # MATRICE ABC COMPLETA (CON MIN E MAX) - ESATTAMENTE COME ORIGINALE
+        # =============================================================================
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
+        st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
         if 'abc_vals' not in st.session_state:
-            st.session_state.abc_vals = {'da_a': 801, 'a_a': -1, 'freq_a': 24, 'da_b': 301, 'a_b': 800, 'freq_b': 12, 'da_c': 10, 'a_c': 300, 'freq_c': 3, 'da_na': 0, 'a_na': 9, 'freq_na': 0}
+            st.session_state.abc_vals = {
+                'da_a': 801, 'a_a': -1, 'freq_a': 24,
+                'da_b': 301, 'a_b': 800, 'freq_b': 12,
+                'da_c': 10, 'a_c': 300, 'freq_c': 3,
+                'da_na': 0, 'a_na': 9, 'freq_na': 0
+            }
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.markdown("**🟢 Classe A**")
-            da_a = st.number_input("da ≥", key="da_a_input", value=st.session_state.abc_vals['da_a'], min_value=0)
-            a_a = st.number_input("a <", key="a_a_input", value=st.session_state.abc_vals['a_a'], min_value=-1, help="-1 = infinito")
-            freq_a = st.number_input("Visite/anno", key="freq_a_input", value=st.session_state.abc_vals['freq_a'], min_value=0)
+            da_a = st.number_input("da ≥", key="da_a_input", value=st.session_state.abc_vals['da_a'], min_value=0, step=1)
+            a_a = st.number_input("a <", key="a_a_input", value=st.session_state.abc_vals['a_a'], min_value=-1, step=1, help="-1 = infinito")
+            freq_a = st.number_input("Visite/anno", key="freq_a_input", value=st.session_state.abc_vals['freq_a'], min_value=0, step=1)
         with col2:
             st.markdown("**🟡 Classe B**")
-            da_b = st.number_input("da ≥", key="da_b_input", value=st.session_state.abc_vals['da_b'], min_value=0)
-            a_b = st.number_input("a <", key="a_b_input", value=st.session_state.abc_vals['a_b'], min_value=-1, help="-1 = infinito")
-            freq_b = st.number_input("Visite/anno", key="freq_b_input", value=st.session_state.abc_vals['freq_b'], min_value=0)
+            da_b = st.number_input("da ≥", key="da_b_input", value=st.session_state.abc_vals['da_b'], min_value=0, step=1)
+            a_b = st.number_input("a <", key="a_b_input", value=st.session_state.abc_vals['a_b'], min_value=-1, step=1, help="-1 = infinito")
+            freq_b = st.number_input("Visite/anno", key="freq_b_input", value=st.session_state.abc_vals['freq_b'], min_value=0, step=1)
         with col3:
             st.markdown("**🔴 Classe C**")
-            da_c = st.number_input("da ≥", key="da_c_input", value=st.session_state.abc_vals['da_c'], min_value=0)
-            a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, help="-1 = infinito")
-            freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0)
+            da_c = st.number_input("da ≥", key="da_c_input", value=st.session_state.abc_vals['da_c'], min_value=0, step=1)
+            a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, step=1, help="-1 = infinito")
+            freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
         with col4:
             st.markdown("**🔵 Non Attivi**")
-            da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0)
-            a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, help="-1 = infinito")
-            freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0)
-        st.session_state.abc_vals = {'da_a': da_a, 'a_a': a_a, 'freq_a': freq_a, 'da_b': da_b, 'a_b': a_b, 'freq_b': freq_b, 'da_c': da_c, 'a_c': a_c, 'freq_c': freq_c, 'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na}
+            da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
+            a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
+            freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
+        st.session_state.abc_vals = {
+            'da_a': da_a, 'a_a': a_a, 'freq_a': freq_a,
+            'da_b': da_b, 'a_b': a_b, 'freq_b': freq_b,
+            'da_c': da_c, 'a_c': a_c, 'freq_c': freq_c,
+            'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na
+        }
         min_vol = da_c
         
         if uploaded:
@@ -331,6 +348,9 @@ def main():
                 with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
             except: pass
 
+    # =============================================================================
+    # STATO SESSIONE & LOGICA
+    # =============================================================================
     if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
     if 'current_result' not in st.session_state: st.session_state.current_result = None
     if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
@@ -346,18 +366,30 @@ def main():
         with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
             try:
                 active_list = [r for r, s in rep_status.items() if s]
-                if len(active_list) == 0: st.error("⚠️ Seleziona almeno un venditore")
+                if len(active_list) == 0:
+                    st.error("⚠️ Seleziona almeno un venditore")
                 else:
-                    res, df_w = run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c, freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, max_stops_per_day, use_nearest_neighbor=use_nn)
+                    res, df_w = run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
+                                               freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro,
+                                               max_stops_per_day, use_nearest_neighbor=use_nn)
                     if res is None: st.error(df_w)
                     else:
                         st.session_state.current_result = res
                         st.session_state.current_df_work = df_w
-                        st.session_state.current_params = {'active_list': active_list, 'ore_gg': ore_effettive_gg, 'gg_lavoro': gg_lavoro, 'dur_visita': dur_visita, 'max_stops': max_stops_per_day, 'reps': reps, 'use_nn': use_nn, 'modo': modo, 'min_vol': min_vol}
+                        st.session_state.current_params = {
+                            'active_list': active_list, 'ore_gg': ore_effettive_gg,
+                            'gg_lavoro': gg_lavoro, 'dur_visita': dur_visita,
+                            'max_stops': max_stops_per_day, 'reps': reps, 'use_nn': use_nn,
+                            'modo': modo, 'min_vol': min_vol
+                        }
                         st.session_state.current_df_v = df_v
                         st.success("✅ Calcolo completato!")
-            except Exception as e: st.error(f"❌ Errore: {e}")
+            except Exception as e:
+                st.error(f"❌ Errore: {e}")
 
+    # =============================================================================
+    # VISUALIZZAZIONE RISULTATI
+    # =============================================================================
     if st.session_state.current_result is not None:
         res = st.session_state.current_result
         df_w = st.session_state.current_df_work
@@ -365,10 +397,17 @@ def main():
         df_v_curr = st.session_state.get('current_df_v', df_v)
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
-        with col1: st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']))}</div></div>", unsafe_allow_html=True)
-        with col2: st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(int(res['n_clienti'].sum()))}</div></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{res['saturazione_pct'].mean():.1f}%</div></div>", unsafe_allow_html=True)
-        with col4: st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(res[res['saturazione_pct'] > 100]))}</div></div>", unsafe_allow_html=True)
+        with col1:
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']))}</div></div>", unsafe_allow_html=True)
+        with col2:
+            total_customers = int(res['n_clienti'].sum())
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers)}</div></div>", unsafe_allow_html=True)
+        with col3:
+            avg_sat = res['saturazione_pct'].mean()
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", unsafe_allow_html=True)
+        with col4:
+            overload = len(res[res['saturazione_pct'] > 100])
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
         st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c))}**")
         
         col_btn, col_name = st.columns([2, 1])
@@ -389,23 +428,33 @@ def main():
             base = st.session_state.scenarios["📍 BASELINE"]
             other = st.session_state.scenarios[sel]
             c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", f"{len(other['result']) - len(base['result']):+d}")
-            with c2: st.metric("Clienti", f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
-            with c3: st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
+            with c1:
+                delta = len(other['result']) - len(base['result'])
+                st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", f"{delta:+d}")
+            with c2:
+                st.metric("Clienti", f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
+            with c3:
+                st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
 
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
-        disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue', 'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
-        disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume', 'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
+        disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c',
+                    'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
+                    'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
+        disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume',
+                        'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
         disp_fmt = disp.copy()
-        for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']: disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
-        for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']: disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
+        for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']:
+            disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
+        for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']:
+            disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
         disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
         disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
         def color_sat(v):
             if pd.isna(v): return ''
             try:
-                n = float(str(v).replace('%', '').replace('.', '').replace(',', '.'))
+                clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
+                n = float(clean)
                 if n > 110: return 'background-color:#ffcdd2;color:#b71c1c'
                 elif n > 100: return 'background-color:#ffe0b2;color:#e65100'
                 elif n > 85: return 'background-color:#fff9c4;color:#f57f17'
@@ -417,7 +466,8 @@ def main():
         st.divider()
         st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
-        if len(df_map) == 0: st.warning("⚠️ Nessun cliente da visualizzare")
+        if len(df_map) == 0:
+            st.warning("⚠️ Nessun cliente da visualizzare")
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
             fig = go.Figure()
@@ -428,15 +478,34 @@ def main():
                 if len(sub) >= 3:
                     lon_h, lat_h = compute_hull_coords(sub)
                     if lon_h is not None:
-                        fig.add_trace(go.Scattermapbox(mode='lines', lon=lon_h, lat=lat_h, line=dict(width=1.5, color=rep_colors[rep]), fill='toself', fillcolor=rep_colors[rep], opacity=0.25, name=f"Zona {rep}", hoverinfo='name'))
+                        fig.add_trace(go.Scattermapbox(
+                            mode='lines', lon=lon_h, lat=lat_h,
+                            line=dict(width=1.5, color=rep_colors[rep]),
+                            fill='toself', fillcolor=rep_colors[rep],
+                            opacity=0.25, name=f"Zona {rep}", hoverinfo='name'
+                        ))
             classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
             for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                 df_c = df_map[df_map['classe'] == classe]
-                if len(df_c) > 0: fig.add_trace(go.Scattermapbox(lat=df_c['latitudine'], lon=df_c['longitudine'], mode='markers', marker=dict(size=size, color=color, opacity=0.8), name=f"Classe {classe}", hoverdata={'assigned_rep': True}))
+                if len(df_c) > 0:
+                    fig.add_trace(go.Scattermapbox(
+                        lat=df_c['latitudine'], lon=df_c['longitudine'],
+                        mode='markers', marker=dict(size=size, color=color, opacity=0.8),
+                        name=f"Classe {classe}", hoverdata={'assigned_rep': True}
+                    ))
             df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(subset=['latitudine', 'longitudine'])
             if len(df_v_active) > 0:
-                fig.add_trace(go.Scattermapbox(lat=df_v_active['latitudine'], lon=df_v_active['longitudine'], mode='markers', marker=dict(size=14, symbol='star', color='black', line=dict(width=2, color='white')), name=' Home Base', hoverinfo='name'))
-            fig.update_layout(mapbox_style="carto-positron", mapbox_zoom=5.5, mapbox_center=dict(lat=42.5, lon=12.5), margin=dict(r=0, t=30, l=0, b=120), height=650, legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5, bgcolor='rgba(255,255,255,0.95)', bordercolor='gray', borderwidth=1))
+                fig.add_trace(go.Scattermapbox(
+                    lat=df_v_active['latitudine'], lon=df_v_active['longitudine'],
+                    mode='markers', marker=dict(size=14, symbol='star', color='black', line=dict(width=2, color='white')),
+                    name=' Home Base', hoverinfo='name'
+                ))
+            fig.update_layout(
+                mapbox_style="carto-positron", mapbox_zoom=5.5, mapbox_center=dict(lat=42.5, lon=12.5),
+                margin=dict(r=0, t=30, l=0, b=120), height=650,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+                            bgcolor='rgba(255,255,255,0.95)', bordercolor='gray', borderwidth=1)
+            )
             st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
