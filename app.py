@@ -96,7 +96,7 @@ def compute_hull_coords(df_customers):
     except:
         return None, None
 
-# 3. TOUR MULTI-CLIENTE (Implementazione richiesta)
+# 3. TOUR MULTI-CLIENTE (Sostituisce calculate_travel_km_aggregated)
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day, circuity_dict, speed_dict, default_speed=65):
     if len(df_customers) == 0:
         return 0.0, 0.0
@@ -160,6 +160,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w = df_w[df_w['classe'] != 'Non Attivo'].copy()
     if len(df_w) == 0:
         return None, "Nessun cliente attivo sopra la soglia minima C."
+
+    # RIMOSSA: df_w['tortuosity'] = ... (sostituita dalla logica nel nuovo calcolo tour)
 
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
@@ -229,9 +231,9 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
     def get_alert(s):
-        if s > 110: return "🔴 CRITICO"
+        if s > 110: return " CRITICO"
         elif s > 100: return "🟠 OVERLOAD"
-        elif s > 85: return "⚠️ ATTENZIONE"
+        elif s > 85: return "️ ATTENZIONE"
         else: return "🟢 OK"
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
     all_reps = pd.DataFrame({'sales_rep': active_list})
@@ -240,7 +242,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_w
 
 # =============================================================================
-# INTERFACCIA
+# INTERFACCIA (INVARITATA RISPETTO A Codice_buono.txt)
 # =============================================================================
 def main():
     st.markdown("""
@@ -257,7 +259,7 @@ def main():
     .stNumberInput > div > div > input { text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
-    st.title(" Field Force Downsizing Simulator")
+    st.title("🎯 Field Force Downsizing Simulator")
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
     
     with st.sidebar:
@@ -326,7 +328,7 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
         
         # =============================================================================
-        # MATRICE ABC COMPLETA (REINSERITA ESATTAMENTE COME NEL CODICE ORIGINALE)
+        # MATRICE ABC COMPLETA (ESATTAMENTE COME IN Codice_buono.txt)
         # =============================================================================
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
@@ -349,12 +351,12 @@ def main():
             a_b = st.number_input("a <", key="a_b_input", value=st.session_state.abc_vals['a_b'], min_value=-1, step=1, help="-1 = infinito")
             freq_b = st.number_input("Visite/anno", key="freq_b_input", value=st.session_state.abc_vals['freq_b'], min_value=0, step=1)
         with col3:
-            st.markdown("**🔴 Classe C**")
+            st.markdown("** Classe C**")
             da_c = st.number_input("da ≥", key="da_c_input", value=st.session_state.abc_vals['da_c'], min_value=0, step=1)
             a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, step=1, help="-1 = infinito")
             freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
         with col4:
-            st.markdown("**🔵 Non Attivi**")
+            st.markdown("** Non Attivi**")
             da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
             a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
             freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
@@ -393,7 +395,7 @@ def main():
                 try:
                     active_list = [r for r, s in rep_status.items() if s]
                     if len(active_list) == 0:
-                        st.error("⚠️ Seleziona almeno un venditore")
+                        st.error("️ Seleziona almeno un venditore")
                     else:
                         res, df_w = run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                                                    freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
@@ -411,14 +413,10 @@ def main():
                             st.session_state.current_df_v = df_v
                             st.success("✅ Calcolo completato!")
                 except Exception as e:
-                    st.error(f"❌ Errore critico durante la simulazione: {e}")
-        
-        # Se la simulazione non è ancora stata fatta o è fallita
-        if st.session_state.current_result is None and run_sim:
-             st.warning("⚠️ La simulazione non è riuscita. Controlla i parametri o ricarica il file.")
+                    st.error(f"❌ Errore: {e}")
 
     # =============================================================================
-    # VISUALIZZAZIONE RISULTATI
+    # VISUALIZZAZIONE RISULTATI (Fuori dalla sidebar)
     # =============================================================================
     if st.session_state.current_result is not None:
         res = st.session_state.current_result
@@ -441,7 +439,7 @@ def main():
         st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c))}**")
         col_btn, col_name = st.columns([2, 1])
         with col_btn:
-            if st.button(" Salva come Baseline", use_container_width=True):
+            if st.button("💾 Salva come Baseline", use_container_width=True):
                 st.session_state.scenarios["📍 BASELINE"] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
                 st.success("✅ Baseline salvata!")
         with col_name:
@@ -490,10 +488,10 @@ def main():
         styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
         st.dataframe(styled, use_container_width=True, hide_index=True)
         st.divider()
-        st.subheader("️ Mappa Territori e Distribuzione Clienti")
+        st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
         if len(df_map) == 0:
-            st.warning("⚠️ Nessun cliente da visualizzare")
+            st.warning("️ Nessun cliente da visualizzare")
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
             fig = go.Figure()
@@ -516,6 +514,7 @@ def main():
             for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                 df_c = df_map[df_map['classe'] == classe]
                 if len(df_c) > 0:
+                    # FIX STREAMLIT CLOUD: hoverdata sostituito con text/hoverinfo
                     fig.add_trace(go.Scattermapbox(
                         lat=df_c['latitudine'], lon=df_c['longitudine'],
                         mode='markers', marker=dict(size=size, color=color, opacity=0.8),
@@ -527,6 +526,7 @@ def main():
                 subset=['latitudine', 'longitudine']
             )
             if len(df_v_active) > 0:
+                # FIX STREAMLIT CLOUD: rimosso symbol e line non supportati
                 fig.add_trace(go.Scattermapbox(
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
