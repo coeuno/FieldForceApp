@@ -517,7 +517,7 @@ def main():
                 for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                     df_c = df_map[df_map['classe'] == classe]
                     if len(df_c) > 0:
-                        # FIX: Sostituito hoverdata invalido con text/hoverinfo standard per go.Scattermapbox
+                        # FIX: hoverdata rimosso, sostituito con text/hoverinfo standard
                         fig.add_trace(go.Scattermapbox(
                             lat=df_c['latitudine'], lon=df_c['longitudine'],
                             mode='markers', marker=dict(size=size, color=color, opacity=0.8),
@@ -529,11 +529,12 @@ def main():
                     subset=['latitudine', 'longitudine']
                 )
                 if len(df_v_active) > 0:
+                    # FIX: rimosso symbol='star' e line=dict(...) incompatibili con Scattermapbox
                     fig.add_trace(go.Scattermapbox(
                         lat=df_v_active['latitudine'],
                         lon=df_v_active['longitudine'],
                         mode='markers',
-                        marker=dict(size=14, symbol='star', color='black', line=dict(width=2, color='white')),
+                        marker=dict(size=12, color='black', opacity=0.9),
                         name=' Home Base',
                         hoverinfo='name'
                     ))
