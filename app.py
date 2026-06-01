@@ -565,7 +565,17 @@ def get_saturation_badge(sat_pct):
 
 
 def main():
-    st.markdown("""
+    # Ripristino venditore da annullamento downsize
+    if 'restore_rep' in st.session_state:
+        r = st.session_state.restore_rep
+        st.session_state[f"rep_{r}"] = True
+        del st.session_state.restore_rep
+
+    # Scroll in alto quando entra in downsize
+    if st.session_state.get('downsize_pending', False):
+        components.html("<script>window.parent.scrollTo({top:0,behavior:'smooth'});setTimeout(function(){var el=document.querySelector('[data-testid=stAppViewContainer]');if(el)el.scrollTop=0;},100);</script>", height=0)
+
+    st.markdown(""""
     <style>
     .stDataFrame [data-testid="stDataFrame"] table td, .dataframe td, .dataframe th {
         text-align: center !important; vertical-align: middle !important; justify-content: center !important;
