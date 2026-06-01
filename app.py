@@ -25,59 +25,44 @@ def fmt_eu(value, decimals=0, suffix='', prefix=''):
         return str(value)
 
 # =============================================================================
-# CONFIGURAZIONE
+# CONFIGURAZIONE (3 ELEMENTI RICHIESTI DAL DEBRIEF)
 # =============================================================================
-# 1. CIRCUITY FACTOR (Distanza stradale / linea d'aria)
+# 1. CIRCUITY FACTOR
 PROVINCIAL_CIRCUITY = {
-    "MI": 1.25, "LO": 1.20, "CR": 1.20, "MN": 1.25, "BS": 1.25, "BG": 1.25,
-    "PV": 1.20, "VC": 1.25, "NO": 1.25, "AL": 1.35, "AT": 1.30, "BI": 1.25,
-    "VB": 1.45, "TO": 1.30, "CN": 1.35, "RA": 1.25, "FE": 1.25, "PC": 1.25,
-    "PR": 1.25, "RE": 1.25, "MO": 1.25, "BO": 1.30, "RN": 1.25, "FO": 1.25,
-    "FC": 1.30, "PU": 1.30, "AN": 1.30, "MC": 1.30, "AP": 1.35, "FM": 1.30,
-    "PE": 1.35, "CH": 1.40, "TE": 1.40, "AQ": 1.55, "CE": 1.35, "BN": 1.40,
-    "NA": 1.35, "AV": 1.45, "SA": 1.40, "PZ": 1.50, "MT": 1.45, "BA": 1.30,
-    "BR": 1.30, "TA": 1.35, "FG": 1.35, "BT": 1.35, "CB": 1.45, "IS": 1.45,
-    "VT": 1.40, "LT": 1.35, "FR": 1.35, "RM": 1.35, "RI": 1.40,
-    "GE": 1.45, "SV": 1.40, "IM": 1.40, "SP": 1.40, "LU": 1.35, "PI": 1.30,
-    "PT": 1.30, "PO": 1.30, "LI": 1.30, "AR": 1.35, "SI": 1.35, "FI": 1.30,
-    "GR": 1.45, "PG": 1.40, "TR": 1.35, "VI": 1.25, "TV": 1.25, "VE": 1.30,
-    "PD": 1.25, "RO": 1.25, "VR": 1.25, "BL": 1.45, "TN": 1.50,
-    "BZ": 1.50, "UD": 1.35, "GO": 1.35, "TS": 1.30, "PN": 1.35, "MS": 1.35,
-    "CA": 1.35, "SS": 1.40, "NU": 1.45, "OR": 1.40, "OT": 1.45, "SU": 1.45,
-    "RG": 1.45, "SR": 1.40, "CT": 1.35, "ME": 1.40, "PA": 1.40, "TP": 1.45,
-    "AG": 1.45, "CL": 1.45, "EN": 1.50, "CS": 1.45, "CZ": 1.45, "VV": 1.50,
-    "RC": 1.50, "KR": 1.45, "LE": 1.30, "AO": 1.40, "BL": 1.40, "SO": 1.40,
-    "VA": 1.25, "CO": 1.25, "LC": 1.25, "IM": 1.25, "SV": 1.25, "GE": 1.25,
-    "AN": 1.25, "MC": 1.25, "FM": 1.25, "AP": 1.25, "PE": 1.25, "CH": 1.25,
-    "TE": 1.25, "RI": 1.25, "VT": 1.25, "GR": 1.25, "PT": 1.25, "FI": 1.25,
-    "SI": 1.25, "AR": 1.25, "PG": 1.25, "TR": 1.25, "CB": 1.25, "IS": 1.25,
-    "CE": 1.25, "NA": 1.25, "AV": 1.25, "BN": 1.25, "SA": 1.25, "PZ": 1.25,
-    "MT": 1.25, "CS": 1.25, "CZ": 1.25, "VV": 1.25, "RC": 1.25, "TP": 1.25,
-    "PA": 1.25, "ME": 1.25, "CT": 1.25, "SR": 1.25, "RG": 1.25, "AG": 1.25,
-    "CL": 1.25, "EN": 1.25, "SS": 1.25, "NU": 1.25, "OR": 1.25, "CA": 1.25,
-    "SU": 1.25, "OT": 1.25, "AQ": 1.40, "AO": 1.40, "BL": 1.40, "BZ": 1.40,
-    "TN": 1.40, "SO": 1.40, "AL": 1.40, "AT": 1.40
+    "MI": 1.25, "LO": 1.20, "CR": 1.20, "MN": 1.25, "BS": 1.25, "BG": 1.25, "PV": 1.20,
+    "VC": 1.25, "NO": 1.25, "AL": 1.35, "AT": 1.30, "BI": 1.25, "VB": 1.45, "TO": 1.30,
+    "CN": 1.35, "RA": 1.25, "FE": 1.25, "PC": 1.25, "PR": 1.25, "RE": 1.25, "MO": 1.25,
+    "BO": 1.30, "RN": 1.25, "FO": 1.25, "FC": 1.30, "PU": 1.30, "AN": 1.30, "MC": 1.30,
+    "AP": 1.35, "FM": 1.30, "PE": 1.35, "CH": 1.40, "TE": 1.40, "AQ": 1.55, "CE": 1.35,
+    "BN": 1.40, "NA": 1.35, "AV": 1.45, "SA": 1.40, "PZ": 1.50, "MT": 1.45, "BA": 1.30,
+    "BR": 1.30, "TA": 1.35, "FG": 1.35, "BT": 1.35, "CB": 1.45, "IS": 1.45, "VT": 1.40,
+    "LT": 1.35, "FR": 1.35, "RM": 1.35, "RI": 1.40, "GE": 1.45, "SV": 1.40, "IM": 1.40,
+    "SP": 1.40, "LU": 1.35, "PI": 1.30, "PT": 1.30, "PO": 1.30, "LI": 1.30, "AR": 1.35,
+    "SI": 1.35, "FI": 1.30, "GR": 1.45, "PG": 1.40, "TR": 1.35, "VI": 1.25, "TV": 1.25,
+    "VE": 1.30, "PD": 1.25, "RO": 1.25, "VR": 1.25, "BL": 1.45, "TN": 1.50, "BZ": 1.50,
+    "UD": 1.35, "GO": 1.35, "TS": 1.30, "PN": 1.35, "MS": 1.35, "CA": 1.35, "SS": 1.40,
+    "NU": 1.45, "OR": 1.40, "OT": 1.45, "SU": 1.45, "RG": 1.45, "SR": 1.40, "CT": 1.35,
+    "ME": 1.40, "PA": 1.40, "TP": 1.45, "AG": 1.45, "CL": 1.45, "EN": 1.50, "CS": 1.45,
+    "CZ": 1.45, "VV": 1.50, "RC": 1.50, "KR": 1.45, "LE": 1.30, "AO": 1.40, "SO": 1.40,
+    "VA": 1.25, "CO": 1.25, "LC": 1.25
 }
 
-# 2. VELOCITÀ MEDIA OPERATIVE PER PROVINCIA (km/h)
+# 2. VELOCITÀ MEDIA PROVINCIALI
 PROVINCIAL_SPEED = {
-    "MI": 38, "RM": 35, "NA": 32, "TO": 40, "GE": 35, "BO": 38, "FI": 36,
-    "VE": 35, "BA": 38, "CT": 34, "PA": 36,
-    "LO": 62, "CR": 65, "MN": 60, "PV": 60, "PC": 62, "PR": 62, "RE": 62,
-    "MO": 58, "RN": 60, "FE": 60, "RA": 58, "FO": 58, "VR": 60, "VI": 60,
-    "PD": 60, "RO": 60, "TV": 60, "BG": 55, "BS": 58, "CO": 50,
-    "VA": 48, "NO": 55, "BI": 55, "VC": 55, "AL": 48, "AT": 48, "CN": 50,
-    "LU": 55, "PI": 55, "LI": 58, "PO": 55, "PT": 52, "AR": 52, "SI": 52,
-    "GR": 48, "LT": 50, "FR": 52, "VT": 50, "RI": 50, "CB": 48,
-    "IS": 48, "CE": 45, "BN": 45, "AV": 45, "SA": 48, "PZ": 48, "MT": 48,
-    "FG": 55, "BT": 55, "BR": 58, "TA": 55, "LE": 58, "KR": 52,
-    "SV": 48, "IM": 45, "SP": 45, "MS": 50, "PG": 50, "TR": 50,
-    "AN": 52, "MC": 50, "AP": 48, "FM": 50, "PE": 48, "CH": 45,
-    "TE": 45, "AQ": 42, "CS": 45, "CZ": 45, "VV": 42, "RC": 42,
-    "RG": 48, "SR": 48, "EN": 45, "CL": 45, "AG": 48, "TP": 48,
-    "ME": 45, "CA": 48, "SS": 48, "NU": 48, "OR": 48, "OT": 48,
-    "SU": 48, "AO": 42, "BL": 45, "BZ": 42, "TN": 42, "SO": 42,
-    "UD": 48, "GO": 48, "PN": 48, "VB": 45, "FC": 50, "PU": 48
+    "MI": 38, "RM": 35, "NA": 32, "TO": 40, "GE": 35, "BO": 38, "FI": 36, "VE": 35,
+    "BA": 38, "CT": 34, "PA": 36, "LO": 62, "CR": 65, "MN": 60, "PV": 60, "PC": 62,
+    "PR": 62, "RE": 62, "MO": 58, "RN": 60, "FE": 60, "RA": 58, "FO": 58, "VR": 60,
+    "VI": 60, "PD": 60, "RO": 60, "TV": 60, "BG": 55, "BS": 58, "CO": 50, "VA": 48,
+    "NO": 55, "BI": 55, "VC": 55, "AL": 48, "AT": 48, "CN": 50, "LU": 55, "PI": 55,
+    "LI": 58, "PO": 55, "PT": 52, "AR": 52, "SI": 52, "GR": 48, "LT": 50, "FR": 52,
+    "VT": 50, "RI": 50, "CB": 48, "IS": 48, "CE": 45, "BN": 45, "AV": 45, "SA": 48,
+    "PZ": 48, "MT": 48, "FG": 55, "BT": 55, "BR": 58, "TA": 55, "LE": 58, "KR": 52,
+    "SV": 48, "IM": 45, "SP": 45, "MS": 50, "PG": 50, "TR": 50, "AN": 52, "MC": 50,
+    "AP": 48, "FM": 50, "PE": 48, "CH": 45, "TE": 45, "AQ": 42, "CS": 45, "CZ": 45,
+    "VV": 42, "RC": 42, "RG": 48, "SR": 48, "EN": 45, "CL": 45, "AG": 48, "TP": 48,
+    "ME": 45, "CA": 48, "SS": 48, "NU": 48, "OR": 48, "OT": 48, "SU": 48, "AO": 42,
+    "BL": 45, "BZ": 42, "TN": 42, "SO": 42, "UD": 48, "GO": 48, "PN": 48, "VB": 45,
+    "FC": 50, "PU": 48
 }
 
 # =============================================================================
@@ -111,7 +96,7 @@ def compute_hull_coords(df_customers):
     except:
         return None, None
 
-# 3. ALGORITMO TOUR MULTI-CLIENTE CON CIRCUITY & VELOCITÀ PROVINCIALI
+# 3. TOUR MULTI-CLIENTE (Sostituisce calculate_travel_km_aggregated)
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day, circuity_dict, speed_dict, default_speed=65):
     if len(df_customers) == 0:
         return 0.0, 0.0
@@ -256,7 +241,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_w
 
 # =============================================================================
-# INTERFACCIA (INVARITATA RISPETTO ALL'ORIGINALE)
+# INTERFACCIA (INVARITATA, SOLO FIX PER AVVIO AFFIDABILE)
 # =============================================================================
 def main():
     st.markdown("""
@@ -288,10 +273,10 @@ def main():
         file_signature = f"{uploaded.name}_{uploaded.size}"
         if file_signature != st.session_state.get('last_upload_signature', ''):
             st.session_state.last_upload_signature = file_signature
-            st.session_state.trigger_auto_run = True
             st.session_state.scenarios = {}
             st.session_state.current_result = None
             st.session_state.current_df_work = None
+            st.session_state.auto_run_pending = True
         try:
             df_c = pd.read_excel(uploaded, sheet_name="clienti_geocodificati")
             df_v = pd.read_excel(uploaded, sheet_name="venditori")
@@ -392,11 +377,14 @@ def main():
         if 'current_result' not in st.session_state: st.session_state.current_result = None
         if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
         if 'current_params' not in st.session_state: st.session_state.current_params = {}
+        
+        # FIX AVVIO AFFIDABILE
         run_sim = False
-        if st.session_state.get('trigger_auto_run', False):
-            st.session_state.trigger_auto_run = False
+        if st.session_state.get('auto_run_pending', False) and st.session_state.current_result is None:
+            st.session_state.auto_run_pending = False
             run_sim = True
         if manual_run: run_sim = True
+
         if run_sim:
             with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
                 try:
@@ -420,7 +408,8 @@ def main():
                             st.session_state.current_df_v = df_v
                             st.success("✅ Calcolo completato!")
                 except Exception as e:
-                    st.error(f"❌ Errore: {e}")
+                    st.error(f"❌ Errore critico: {e}")
+        
         if st.session_state.current_result is not None:
             res = st.session_state.current_result
             df_w = st.session_state.current_df_work
@@ -517,24 +506,21 @@ def main():
                 for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                     df_c = df_map[df_map['classe'] == classe]
                     if len(df_c) > 0:
-                        # FIX: hoverdata rimosso, sostituito con text/hoverinfo standard
                         fig.add_trace(go.Scattermapbox(
                             lat=df_c['latitudine'], lon=df_c['longitudine'],
                             mode='markers', marker=dict(size=size, color=color, opacity=0.8),
                             name=f"Classe {classe}",
-                            text=df_c['assigned_rep'].values,
-                            hoverinfo='name+text'
+                            hoverdata={'assigned_rep': True}
                         ))
                 df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
                     subset=['latitudine', 'longitudine']
                 )
                 if len(df_v_active) > 0:
-                    # FIX: rimosso symbol='star' e line=dict(...) incompatibili con Scattermapbox
                     fig.add_trace(go.Scattermapbox(
                         lat=df_v_active['latitudine'],
                         lon=df_v_active['longitudine'],
                         mode='markers',
-                        marker=dict(size=12, color='black', opacity=0.9),
+                        marker=dict(size=14, symbol='star', color='black', line=dict(width=2, color='white')),
                         name=' Home Base',
                         hoverinfo='name'
                     ))
@@ -563,7 +549,7 @@ def main():
             csv = export_df.to_csv(index=False, sep=';', decimal=',')
             st.download_button(" Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
         else:
-            st.info(" Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
+            st.info("⏳ Simulazione non ancora avviata. Clicca '🚀 LANCIA SIMULAZIONE' o attendi il calcolo automatico dopo il caricamento.")
 
 if __name__ == "__main__":
     main()
