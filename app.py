@@ -658,30 +658,63 @@ def main():
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
-        with st.expander("Attiva / Disattiva venditori", expanded=True):
-            rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
+        # =============================================================================
+        # STATO DOWNSIZE — sanitizzazione
+        # =============================================================================
+        is_pending = st.session_state.get('downsize_pending', False)
+        removed_rep_pending = st.session_state.get('removed_rep', None)
 
-        # =============================================================================
-        # TRIGGER DOWNSIZE — rilevamento rimozione venditore
-        # =============================================================================
-        active_list_sidebar = [r for r, s in rep_status.items() if s]
-        if 'active_snapshot' not in st.session_state:
+        # Se lo stato è inconsistente, pulisci
+        if is_pending and (removed_rep_pending not in reps or 'pre_downsize_df_c' not in st.session_state):
+            st.session_state.downsize_pending = False
+            st.session_state.removed_rep = None
+            st.session_state.downsize_candidates = []
+            st.session_state.downsize_selected_receivers = []
+            st.session_state.downsize_preview_df = None
+            st.session_state.downsize_assignments = []
+            st.session_state.downsize_preview_result = None
+            st.session_state.downsize_preview_df_work = None
+            is_pending = False
+
+        # Inizializza active_snapshot se nuovo file o mancante
+        if 'file_signature' not in st.session_state or st.session_state.file_signature != file_signature:
+            st.session_state.file_signature = file_signature
             st.session_state.active_snapshot = set(reps)
+            st.session_state.downsize_pending = False
+            st.session_state.removed_rep = None
+            st.session_state.downsize_candidates = []
+            st.session_state.downsize_selected_receivers = []
+            st.session_state.downsize_preview_df = None
+            st.session_state.downsize_assignments = []
+            st.session_state.downsize_preview_result = None
+            st.session_state.downsize_preview_df_work = None
 
-        if st.session_state.get('downsize_pending', False):
-            # Durante un downsize, blocca altre deselezioni
-            removed_rep = st.session_state.removed_rep
-            for r in reps:
-                if r != removed_rep and not st.session_state.get(f"rep_{r}", True):
-                    st.session_state[f"rep_{r}"] = True
-            if st.session_state.get(f"rep_{removed_rep}", True):
-                st.session_state[f"rep_{removed_rep}"] = False
-            st.warning(f"⚠️ Downsize in corso per **{removed_rep}**. Completa o annulla per continuare.")
-        else:
+        # =============================================================================
+        # SIDEBAR: Venditori Attivi/Disattivi
+        # =============================================================================
+        with st.expander("Attiva / Disattiva venditori", expanded=True):
+            if is_pending:
+                # Durante downsize: stato statico, nessuna checkbox
+                for r in reps:
+                    if r == removed_rep_pending:
+                        st.markdown(f"❌ ~~{r}~~ *(in riassegnazione)*")
+                    else:
+                        st.markdown(f"✅ {r}")
+                rep_status = {r: (r != removed_rep_pending) for r in reps}
+            else:
+                rep_status = {}
+                for r in reps:
+                    val = r in st.session_state.active_snapshot
+                    rep_status[r] = st.checkbox(r, value=val, key=f"rep_{r}")
+
+        # =============================================================================
+        # TRIGGER DOWNSIZE (solo se non in pending)
+        # =============================================================================
+        if not is_pending:
+            active_list_sidebar = [r for r, s in rep_status.items() if s]
             removed = st.session_state.active_snapshot - set(active_list_sidebar)
             if removed:
                 removed_rep = sorted(list(removed))[0]
-                # Entra in stato pending
                 st.session_state.downsize_pending = True
                 st.session_state.removed_rep = removed_rep
                 st.session_state.pre_downsize_df_c = df_c.copy()
@@ -691,11 +724,10 @@ def main():
                 st.session_state.downsize_preview_df = None
                 st.session_state.downsize_assignments = []
                 st.session_state.downsize_preview_result = None
+                st.session_state.downsize_preview_df_work = None
                 st.rerun()
             else:
                 st.session_state.active_snapshot = set(active_list_sidebar)
-
-
 
     # =============================================================================
     # PANNELLO DOWNSIZE INTERATTIVO
@@ -724,13 +756,13 @@ def main():
         <div class="downsize-box">
             <div class="downsize-title">⚠️ DOWNSIZE IN CORSO</div>
             <div class="downsize-sub">
-                Venditore rimosso: <b>{removed_rep}</b> &nbsp;|&nbsp; 
+                Venditore rimosso: <b>{removed_rep}</b> &nbsp;|&nbsp;
                 Clienti da riassegnare: <b>{n_removed}</b>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Calcola candidati limitrofi se non già fatto
+        # Calcola candidati limitrofi
         if not st.session_state.get('downsize_candidates', []):
             active_for_neighbor = [r for r in reps if r != removed_rep]
             candidates = compute_neighbor_reps(
@@ -743,24 +775,25 @@ def main():
         if not candidates:
             st.error("❌ Nessun venditore limitrofo trovato con coordinate valide.")
             if st.button("🔙 Chiudi e Ripristina", use_container_width=True):
-                st.session_state[f"rep_{removed_rep}"] = True
                 st.session_state.downsize_pending = False
                 st.session_state.removed_rep = None
                 st.session_state.downsize_candidates = []
+                st.session_state.active_snapshot = set(st.session_state.pre_downsize_active)
                 st.rerun()
         else:
             st.subheader("👥 1. Seleziona i venditori riceventi")
             st.caption("Scegli uno o più venditori che riceveranno i clienti. Ordinati per prossimità territoriale.")
 
-            # Recupera valori ABC per stima carico
             abc_vals = st.session_state.get('abc_vals', {
                 'freq_a': 24, 'freq_b': 16, 'freq_c': 12
             })
             fa = abc_vals.get('freq_a', 24)
             fb = abc_vals.get('freq_b', 16)
             fc = abc_vals.get('freq_c', 12)
+            da_a = abc_vals.get('da_a', 801)
+            da_b = abc_vals.get('da_b', 401)
+            da_c = abc_vals.get('da_c', 101)
 
-            # Layout candidati in colonne
             n_cols = min(len(candidates), 3)
             cols = st.columns(n_cols)
             selected_receivers = []
@@ -768,7 +801,6 @@ def main():
             for i, cand in enumerate(candidates):
                 rep = cand['rep']
                 with cols[i % n_cols]:
-                    # Recupera saturazione dal current_result
                     sat_pre = 0.0
                     sat_label = "N/D"
                     if st.session_state.current_result is not None:
@@ -780,7 +812,6 @@ def main():
                             sat_label = f"{sat_pre:.1f}%"
 
                     badge, bg, fg = get_saturation_badge(sat_pre)
-
                     label_text = f"**{rep}**\n\n{badge} Sat: {sat_label}\n\n📍 Distanza media: **{cand['avg_dist_km']} km**\n\n🎯 Clienti vicini: **{cand['nn_count']}** / {cand['n_clients']}"
                     chk = st.checkbox(label_text, key=f"recv_{rep}")
                     if chk:
@@ -788,7 +819,6 @@ def main():
 
             st.session_state.downsize_selected_receivers = selected_receivers
 
-            # Bottoni azione
             btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
 
             with btn_col1:
@@ -807,14 +837,30 @@ def main():
                         fa, fb, fc,
                         ore_effettive_gg,
                         gg_lavoro,
-                        st.session_state.get('col_vol')
+                        st.session_state.get('col_vol'),
+                        da_a, da_b, da_c
                     )
-                    st.session_state.downsize_preview_df = df_new
-                    st.session_state.downsize_assignments = assigns
-                    st.rerun()
+                    # Calcolo VERO con run_simulation
+                    new_active = [r for r in st.session_state.pre_downsize_active if r != removed_rep]
+                    abc = st.session_state.abc_vals
+                    preview_res, preview_df_w = run_simulation(
+                        df_new, df_v, new_active, col_vol,
+                        abc['da_a'], abc['da_b'], abc['da_c'],
+                        abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                        dur_visita, ore_effettive_gg, gg_lavoro,
+                        max_stops_per_day, use_nearest_neighbor=False
+                    )
+                    if preview_res is None:
+                        st.error(f"❌ Errore calcolo preview: {preview_df_w}")
+                    else:
+                        st.session_state.downsize_preview_df = df_new
+                        st.session_state.downsize_assignments = assigns
+                        st.session_state.downsize_preview_result = preview_res
+                        st.session_state.downsize_preview_df_work = preview_df_w
+                        st.rerun()
 
             with btn_col2:
-                disable_confirm = st.session_state.downsize_preview_df is None
+                disable_confirm = st.session_state.downsize_preview_result is None
                 if st.button("✅ Conferma e Applica", disabled=disable_confirm, use_container_width=True):
                     # Salva scenario pre-downsize per confronto
                     if st.session_state.current_result is not None:
@@ -824,6 +870,8 @@ def main():
 
                     # Applica modifiche
                     st.session_state.df_c = st.session_state.downsize_preview_df.copy()
+                    st.session_state.current_result = st.session_state.downsize_preview_result.copy()
+                    st.session_state.current_df_work = st.session_state.downsize_preview_df_work.copy() if st.session_state.downsize_preview_df_work is not None else None
 
                     # Aggiorna active_snapshot (rimuovi definitivamente)
                     new_active = [r for r in st.session_state.pre_downsize_active if r != removed_rep]
@@ -836,58 +884,69 @@ def main():
                     st.session_state.downsize_selected_receivers = []
                     st.session_state.downsize_preview_df = None
                     st.session_state.downsize_assignments = []
+                    st.session_state.downsize_preview_result = None
+                    st.session_state.downsize_preview_df_work = None
 
-                    # Forza il venditore rimosso a False nelle checkbox
-                    st.session_state[f"rep_{removed_rep}"] = False
+                    # Aggiorna params
+                    st.session_state.current_params = {
+                        'active_list': new_active,
+                        'ore_gg': ore_effettive_gg,
+                        'gg_lavoro': gg_lavoro,
+                        'dur_visita': dur_visita,
+                        'max_stops': max_stops_per_day,
+                        'reps': reps,
+                        'use_nn': False,
+                        'modo': "📍 Mappa Attuale (Assegnazione Reale)",
+                        'min_vol': min_vol
+                    }
 
-                    # Trigger ricalcolo simulazione
-                    st.session_state.trigger_auto_run = True
+                    st.success("✅ Downsize applicato! Confronto Prima/Dopo disponibile sotto.")
                     st.rerun()
 
             with btn_col3:
                 if st.button("❌ Annulla e Ripristina", use_container_width=True):
-                    st.session_state[f"rep_{removed_rep}"] = True
                     st.session_state.downsize_pending = False
                     st.session_state.removed_rep = None
                     st.session_state.downsize_candidates = []
                     st.session_state.downsize_selected_receivers = []
                     st.session_state.downsize_preview_df = None
                     st.session_state.downsize_assignments = []
+                    st.session_state.downsize_preview_result = None
+                    st.session_state.downsize_preview_df_work = None
                     st.session_state.active_snapshot = set(st.session_state.pre_downsize_active)
                     st.rerun()
 
             # =============================================================================
-            # PREVIEW RIASSENZIONE
+            # PREVIEW RIASSENZIONE (DATI VERO MOTORE)
             # =============================================================================
-            if st.session_state.downsize_preview_df is not None:
+            if st.session_state.downsize_preview_result is not None:
                 st.divider()
-                st.subheader("📊 2. Preview Riassegnazione")
+                st.subheader("📊 2. Preview Riassegnazione — Dati Veri")
 
-                assigns = st.session_state.downsize_assignments
-                cap = ore_effettive_gg * gg_lavoro
+                preview_res = st.session_state.downsize_preview_result
+                pre_res = st.session_state.current_result
 
                 preview_rows = []
                 for rep in selected_receivers:
-                    n_assigned = sum(1 for _, r, _ in assigns if r == rep)
-                    load_added = sum(l for _, r, l in assigns if r == rep)
+                    pre_row = pre_res[pre_res['sales_rep'] == rep]
+                    post_row = preview_res[preview_res['sales_rep'] == rep]
 
-                    sat_pre = 0.0
-                    if st.session_state.current_result is not None:
-                        row_sat = st.session_state.current_result[
-                            st.session_state.current_result['sales_rep'] == rep
-                        ]
-                        if len(row_sat) > 0:
-                            sat_pre = row_sat['saturazione_pct'].iloc[0]
-
-                    sat_post = sat_pre + (load_added / cap * 100.0) if cap > 0 else sat_pre
+                    sat_pre = pre_row['saturazione_pct'].iloc[0] if len(pre_row) > 0 else 0.0
+                    sat_post = post_row['saturazione_pct'].iloc[0] if len(post_row) > 0 else 0.0
+                    cli_pre = int(pre_row['n_clienti'].iloc[0]) if len(pre_row) > 0 else 0
+                    cli_post = int(post_row['n_clienti'].iloc[0]) if len(post_row) > 0 else 0
+                    km_pre = pre_row['km_annui'].iloc[0] if len(pre_row) > 0 else 0.0
+                    km_post = post_row['km_annui'].iloc[0] if len(post_row) > 0 else 0.0
+                    ore_pre = pre_row['ore_totali_annue'].iloc[0] if len(pre_row) > 0 else 0.0
+                    ore_post = post_row['ore_totali_annue'].iloc[0] if len(post_row) > 0 else 0.0
 
                     preview_rows.append({
                         'Ricevente': rep,
-                        'Clienti Assegnati': n_assigned,
-                        'Sat Pre': f"{sat_pre:.1f}%",
-                        'Sat Post (stim.)': f"{sat_post:.1f}%",
+                        'Clienti': f"{cli_pre} → {cli_post} ({cli_post - cli_pre:+d})",
+                        'Sat %': f"{sat_pre:.1f}% → {sat_post:.1f}%",
                         'Δ Sat': f"{sat_post - sat_pre:+.1f}%",
-                        'Ore Aggiunte (stim.)': f"{load_added:.1f}h"
+                        'Ore Totali': f"{ore_pre:.1f} → {ore_post:.1f}h",
+                        'Km Annui': f"{km_pre:,.0f} → {km_post:,.0f} km"
                     })
 
                 if preview_rows:
@@ -897,75 +956,72 @@ def main():
                 st.subheader("🗺️ 3. Mappa Preview Spostamenti")
                 df_prev = st.session_state.downsize_preview_df
                 df_pre = st.session_state.pre_downsize_df_c
-
-                # Clienti spostati
                 moved_mask = (df_prev['sales rep'] != df_pre['sales rep']) & (df_pre['sales rep'] == removed_rep)
                 df_moved = df_prev[moved_mask].copy()
 
-                fig_d = go.Figure()
-                colors_d = px.colors.qualitative.Bold
-                rec_color_map = {rep: colors_d[i % len(colors_d)] for i, rep in enumerate(selected_receivers)}
+                if len(df_moved) > 0:
+                    fig_d = go.Figure()
+                    colors_d = px.colors.qualitative.Bold
+                    rec_color_map = {rep: colors_d[i % len(colors_d)] for i, rep in enumerate(selected_receivers)}
 
-                # Clienti per nuovo venditore
-                for rep in selected_receivers:
-                    sub = df_moved[df_moved['sales rep'] == rep]
-                    if len(sub) > 0:
+                    for rep in selected_receivers:
+                        sub = df_moved[df_moved['sales rep'] == rep]
+                        if len(sub) > 0:
+                            fig_d.add_trace(go.Scattermapbox(
+                                lat=sub['latitudine'], lon=sub['longitudine'],
+                                mode='markers',
+                                marker=dict(size=10, color=rec_color_map[rep], opacity=0.9),
+                                name=f"→ {rep} ({len(sub)} clienti)",
+                                hoverinfo='name'
+                            ))
+                            v_home = df_v[df_v['sales rep'] == rep]
+                            if len(v_home) > 0 and pd.notna(v_home['latitudine'].iloc[0]):
+                                for _, row in sub.iterrows():
+                                    fig_d.add_trace(go.Scattermapbox(
+                                        mode='lines',
+                                        lat=[row['latitudine'], v_home['latitudine'].iloc[0]],
+                                        lon=[row['longitudine'], v_home['longitudine'].iloc[0]],
+                                        line=dict(width=1, color=rec_color_map[rep]),
+                                        opacity=0.4,
+                                        showlegend=False,
+                                        hoverinfo='skip'
+                                    ))
+
+                    df_v_recv = df_v[df_v['sales rep'].isin(selected_receivers)].dropna(subset=['latitudine', 'longitudine'])
+                    if len(df_v_recv) > 0:
                         fig_d.add_trace(go.Scattermapbox(
-                            lat=sub['latitudine'], lon=sub['longitudine'],
+                            lat=df_v_recv['latitudine'], lon=df_v_recv['longitudine'],
                             mode='markers',
-                            marker=dict(size=10, color=rec_color_map[rep], opacity=0.9),
-                            name=f"→ {rep} ({len(sub)} clienti)",
+                            marker=dict(size=16, color='white', opacity=0.9, symbol='star'),
+                            name='⭐ Home Base Riceventi',
                             hoverinfo='name'
                         ))
-                        # Linee verso home base
-                        v_home = df_v[df_v['sales rep'] == rep]
-                        if len(v_home) > 0 and pd.notna(v_home['latitudine'].iloc[0]):
-                            for _, row in sub.iterrows():
-                                fig_d.add_trace(go.Scattermapbox(
-                                    mode='lines',
-                                    lat=[row['latitudine'], v_home['latitudine'].iloc[0]],
-                                    lon=[row['longitudine'], v_home['longitudine'].iloc[0]],
-                                    line=dict(width=1, color=rec_color_map[rep]),
-                                    opacity=0.4,
-                                    showlegend=False,
-                                    hoverinfo='skip'
-                                ))
 
-                # Home base riceventi
-                df_v_recv = df_v[df_v['sales rep'].isin(selected_receivers)].dropna(subset=['latitudine', 'longitudine'])
-                if len(df_v_recv) > 0:
-                    fig_d.add_trace(go.Scattermapbox(
-                        lat=df_v_recv['latitudine'], lon=df_v_recv['longitudine'],
-                        mode='markers',
-                        marker=dict(size=16, color='white', opacity=0.9,
-                                   symbol='star'),
-                        name='⭐ Home Base Riceventi',
-                        hoverinfo='name'
-                    ))
+                    v_removed = df_v[df_v['sales rep'] == removed_rep]
+                    if len(v_removed) > 0 and pd.notna(v_removed['latitudine'].iloc[0]):
+                        fig_d.add_trace(go.Scattermapbox(
+                            lat=v_removed['latitudine'], lon=v_removed['longitudine'],
+                            mode='markers',
+                            marker=dict(size=18, color='gray', opacity=0.5, symbol='x'),
+                            name=f'❌ {removed_rep} (rimosso)',
+                            hoverinfo='name'
+                        ))
 
-                # Home base venditore rimosso (grigia, trasparente)
-                v_removed = df_v[df_v['sales rep'] == removed_rep]
-                if len(v_removed) > 0 and pd.notna(v_removed['latitudine'].iloc[0]):
-                    fig_d.add_trace(go.Scattermapbox(
-                        lat=v_removed['latitudine'], lon=v_removed['longitudine'],
-                        mode='markers',
-                        marker=dict(size=18, color='gray', opacity=0.5,
-                                   symbol='x'),
-                        name=f'❌ {removed_rep} (rimosso)',
-                        hoverinfo='name'
-                    ))
-
-                fig_d.update_layout(
-                    mapbox_style="carto-positron",
-                    mapbox_zoom=6,
-                    mapbox_center=dict(lat=df_moved['latitudine'].mean() if len(df_moved)>0 else 42.5,
-                                        lon=df_moved['longitudine'].mean() if len(df_moved)>0 else 12.5),
-                    margin=dict(r=0, t=30, l=0, b=0),
-                    height=500,
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
-                               bgcolor='rgba(255,255,255,0.9)')
-                )
-                st.plotly_chart(fig_d, use_container_width=True)
+                    fig_d.update_layout(
+                        mapbox_style="carto-positron",
+                        mapbox_zoom=6,
+                        mapbox_center=dict(
+                            lat=df_moved['latitudine'].mean() if len(df_moved) > 0 else 42.5,
+                            lon=df_moved['longitudine'].mean() if len(df_moved) > 0 else 12.5
+                        ),
+                        margin=dict(r=0, t=30, l=0, b=0),
+                        height=500,
+                        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+                                   bgcolor='rgba(255,255,255,0.9)')
+                    )
+                    st.plotly_chart(fig_d, use_container_width=True)
+                else:
+                    st.info("Nessun cliente da visualizzare sulla mappa.")
 
                 # Alert clienti lontani
                 distant = []
@@ -986,14 +1042,11 @@ def main():
                             st.write(f"... e altri {len(distant)-10}")
 
         st.divider()
-        # Blocca il resto dell'interfaccia durante il downsize
         st.stop()
 
-    # =============================================================================
-    # MAIN CONTENT: Matrice ABC
-    # =============================================================================
-    if uploaded:
         st.session_state.df_c = df_c
+        st.session_state.df_c = df_c
+        st.session_state.col_vol = col_vol
         st.session_state.col_vol = col_vol
 
         st.divider()
