@@ -566,6 +566,19 @@ def get_saturation_badge(sat_pct):
 
 
 def main():
+    # =============================================================================
+    # INIZIALIZZAZIONE STATO GLOBALE
+    # =============================================================================
+    if 'abc_vals' not in st.session_state or st.session_state.abc_vals is None:
+        st.session_state.abc_vals = {
+            'da_a': 801, 'a_a': -1, 'freq_a': 24,
+            'da_b': 401, 'a_b': 800, 'freq_b': 16,
+            'da_c': 101, 'a_c': 400, 'freq_c': 12,
+            'da_d': 0, 'a_d': 100, 'freq_d': 0
+        }
+    if 'abc_version' not in st.session_state:
+        st.session_state.abc_version = 2
+
     # Ripristino venditore da annullamento downsize
     if 'restore_rep' in st.session_state:
         r = st.session_state.restore_rep
@@ -842,7 +855,12 @@ def main():
                     )
                     # Calcolo VERO con run_simulation
                     new_active = [r for r in st.session_state.pre_downsize_active if r != removed_rep]
-                    abc = st.session_state.abc_vals
+                    abc = st.session_state.get('abc_vals', {
+                'da_a': 801, 'a_a': -1, 'freq_a': 24,
+                'da_b': 401, 'a_b': 800, 'freq_b': 16,
+                'da_c': 101, 'a_c': 400, 'freq_c': 12,
+                'da_d': 0, 'a_d': 100, 'freq_d': 0
+            })
                     preview_res, preview_df_w = run_simulation(
                         df_new, df_v, new_active, col_vol,
                         abc['da_a'], abc['da_b'], abc['da_c'],
@@ -1057,15 +1075,7 @@ def main():
         # Forza reset matrice se versione cambiata
         if 'abc_version' not in st.session_state:
             st.session_state.abc_version = 2
-            st.session_state.abc_vals = None
-
-        if 'abc_vals' not in st.session_state or st.session_state.abc_vals is None:
-            st.session_state.abc_vals = {
-                'da_a': 801, 'a_a': -1, 'freq_a': 24,
-                'da_b': 401, 'a_b': 800, 'freq_b': 16,
-                'da_c': 101, 'a_c': 400, 'freq_c': 12,
-                'da_d': 0, 'a_d': 100, 'freq_d': 0
-            }
+            # abc_vals già inizializzato all'inizio di main()
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -1134,7 +1144,12 @@ def main():
                 if len(active_list) == 0:
                     st.error("⚠️ Seleziona almeno un venditore")
                 else:
-                    abc = st.session_state.abc_vals
+                    abc = st.session_state.get('abc_vals', {
+                'da_a': 801, 'a_a': -1, 'freq_a': 24,
+                'da_b': 401, 'a_b': 800, 'freq_b': 16,
+                'da_c': 101, 'a_c': 400, 'freq_c': 12,
+                'da_d': 0, 'a_d': 100, 'freq_d': 0
+            })
                     res, df_w = run_simulation(df_c, df_v, active_list, col_vol, 
                                                abc['da_a'], abc['da_b'], abc['da_c'],
                                                abc['freq_a'], abc['freq_b'], abc['freq_c'],
