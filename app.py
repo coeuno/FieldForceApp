@@ -300,7 +300,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             agg_list.append({
                 'sales_rep': rep,
                 'n_clienti': int(len(sub)),
-                'n_clienti_uniq': int(sub['sold to id'].nunique()),
                 'n_classe_a': int((sub['classe'] == 'A').sum()),
                 'n_classe_b': int((sub['classe'] == 'B').sum()),
                 'n_classe_c': int((sub['classe'] == 'C').sum()),
@@ -310,7 +309,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             })
         else:
             agg_list.append({
-                'sales_rep': rep, 'n_clienti': 0, 'n_clienti_uniq': 0,
+                'sales_rep': rep, 'n_clienti': 0,
                 'n_classe_a': 0, 'n_classe_b': 0, 'n_classe_c': 0, 'n_classe_d': 0,
                 'volume_abc': 0.0, 'volume_d': 0.0
             })
@@ -449,7 +448,7 @@ def main():
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input("📅 Giorni lavorativi/anno", 180, 260, 220, step=5)
-        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
+        pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 100, step=5)
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
@@ -469,12 +468,13 @@ def main():
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
 
+        # NUOVI DEFAULT: D=0-100, C=101-400, B=401-800, A=801+
         if 'abc_vals' not in st.session_state:
             st.session_state.abc_vals = {
                 'da_a': 801, 'a_a': -1, 'freq_a': 24,
-                'da_b': 301, 'a_b': 800, 'freq_b': 16,
-                'da_c': 10, 'a_c': 300, 'freq_c': 12,
-                'da_na': 0, 'a_na': 9, 'freq_na': 0
+                'da_b': 401, 'a_b': 800, 'freq_b': 16,
+                'da_c': 101, 'a_c': 400, 'freq_c': 12,
+                'da_d': 0, 'a_d': 100, 'freq_d': 0
             }
 
         col1, col2, col3, col4 = st.columns(4)
@@ -495,14 +495,14 @@ def main():
             freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
         with col4:
             st.markdown("**⚫ Classe D**")
-            da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
-            a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
-            freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
+            da_d = st.number_input("da ≥", key="da_d_input", value=st.session_state.abc_vals['da_d'], min_value=0, step=1)
+            a_d = st.number_input("a <", key="a_d_input", value=st.session_state.abc_vals['a_d'], min_value=-1, step=1, help="-1 = infinito")
+            freq_d = st.number_input("Visite/anno", key="freq_d_input", value=st.session_state.abc_vals['freq_d'], min_value=0, step=1)
         st.session_state.abc_vals = {
             'da_a': da_a, 'a_a': a_a, 'freq_a': freq_a,
             'da_b': da_b, 'a_b': a_b, 'freq_b': freq_b,
             'da_c': da_c, 'a_c': a_c, 'freq_c': freq_c,
-            'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na
+            'da_d': da_d, 'a_d': a_d, 'freq_d': freq_d
         }
         min_vol = da_c
 
@@ -669,30 +669,36 @@ def main():
 
         def style_totale(row):
             if row.name == len(disp_fmt) - 1:
-                return ['font-weight: bold; background-color: #e8e8e8; border-top: 2px solid #333333;'] * len(row)
+                return ['color: #000000 !important; font-weight: bold; background-color: #e8e8e8; border-top: 2px solid #333333;'] * len(row)
             return [''] * len(row)
 
         styled = (disp_fmt.style
                   .apply(style_totale, axis=1)
-                  .map(color_sat, subset=['Sat %'])
-                  .set_properties(**{'text-align': 'center'}))
+                  .map(color_sat, subset=['Sat %']))
 
         # Altezza dinamica per mostrare tutto senza scroll interno
         row_height = 35
         header_height = 50
         table_height = (len(disp_fmt) + 1) * row_height + header_height
 
+        # Column config per centrare tutto
+        col_cfg = {}
+        for c in disp_fmt.columns:
+            if c in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
+                col_cfg[c] = st.column_config.NumberColumn(c, width="small", alignment="center")
+            elif c in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG', 'Vis/GG']:
+                col_cfg[c] = st.column_config.NumberColumn(c, width="small", alignment="center")
+            elif c == 'Sat %':
+                col_cfg[c] = st.column_config.TextColumn(c, width="small", alignment="center")
+            else:
+                col_cfg[c] = st.column_config.TextColumn(c, alignment="center")
+
         st.dataframe(
             styled,
             use_container_width=True,
             hide_index=True,
             height=table_height,
-            column_config={
-                "A": st.column_config.NumberColumn("A", width="small"),
-                "B": st.column_config.NumberColumn("B", width="small"),
-                "C": st.column_config.NumberColumn("C", width="small"),
-                "D": st.column_config.NumberColumn("D", width="small"),
-            }
+            column_config=col_cfg
         )
 
         st.divider()
