@@ -247,7 +247,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     def get_alert(s):
         if s > 110: return "🔴 CRITICO"
         elif s > 100: return "🟠 OVERLOAD"
-        elif s > 85: return " ATTENZIONE"
+        elif s > 85: return "⚠️ ATTENZIONE"
         else: return "🟢 OK"
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
     all_reps = pd.DataFrame({'sales_rep': active_list})
@@ -517,11 +517,13 @@ def main():
                 for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                     df_c = df_map[df_map['classe'] == classe]
                     if len(df_c) > 0:
+                        # FIX: Sostituito hoverdata invalido con text/hoverinfo standard per go.Scattermapbox
                         fig.add_trace(go.Scattermapbox(
                             lat=df_c['latitudine'], lon=df_c['longitudine'],
                             mode='markers', marker=dict(size=size, color=color, opacity=0.8),
                             name=f"Classe {classe}",
-                            hoverdata={'assigned_rep': True}
+                            text=df_c['assigned_rep'].values,
+                            hoverinfo='name+text'
                         ))
                 df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
                     subset=['latitudine', 'longitudine']
