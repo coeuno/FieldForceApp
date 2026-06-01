@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 from scipy.spatial import ConvexHull
 import warnings
 warnings.filterwarnings('ignore')
-
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
 
 # =============================================================================
@@ -93,7 +92,6 @@ def compute_hull_coords(df_customers):
     except: return None, None
 
 def calculate_travel_metrics(df_customers, rep_home_lat, rep_home_lon, circuity_dict, speed_dict):
-    """Livello 1: Calcolo fisico con circuity + velocità provinciale ponderata."""
     if len(df_customers) == 0: return 0.0, 0.0
     
     custs = df_customers.copy()
@@ -109,7 +107,7 @@ def calculate_travel_metrics(df_customers, rep_home_lat, rep_home_lon, circuity_
     custs['speed'] = custs['sigla'].map(speed_dict).fillna(50)
     weighted_speed = (custs['speed'] * custs['freq_visite']).sum() / total_visits
 
-    routing_factor = 1.35  # Simula tour multi-stop giornaliero
+    routing_factor = 1.35
     km_annui = total_visits * avg_road_dist * routing_factor
     ore_viaggio = km_annui / weighted_speed if weighted_speed > 0 else 0
     
@@ -251,7 +249,6 @@ def main():
             st.error(f"❌ Errore lettura file: {e}")
             return
 
-        # FIX CRITICO: str(c) evita AttributeError se Excel ha colonne numeriche
         df_c.columns = [str(c).strip().lower() for c in df_c.columns]
         df_v.columns = [str(c).strip().lower() for c in df_v.columns]
         for col in ['latitudine', 'longitudine', 'sigla']:
@@ -295,7 +292,7 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
         # =============================================================================
-        # MATRICE ABC COMPLETA (CON MIN E MAX) - ESATTAMENTE COME ORIGINALE
+        # MATRICE ABC - ESATTAMENTE COME NEL TUO CODICE ORIGINALE
         # =============================================================================
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
@@ -348,9 +345,6 @@ def main():
                 with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
             except: pass
 
-    # =============================================================================
-    # STATO SESSIONE & LOGICA
-    # =============================================================================
     if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
     if 'current_result' not in st.session_state: st.session_state.current_result = None
     if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
@@ -387,9 +381,6 @@ def main():
             except Exception as e:
                 st.error(f"❌ Errore: {e}")
 
-    # =============================================================================
-    # VISUALIZZAZIONE RISULTATI
-    # =============================================================================
     if st.session_state.current_result is not None:
         res = st.session_state.current_result
         df_w = st.session_state.current_df_work
