@@ -161,8 +161,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     if len(df_w) == 0:
         return None, "Nessun cliente attivo sopra la soglia minima C."
 
-    # RIMOSSA: df_w['tortuosity'] = ... (sostituita dalla logica nel nuovo calcolo tour)
-
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
@@ -231,9 +229,9 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
     def get_alert(s):
-        if s > 110: return " CRITICO"
+        if s > 110: return "🔴 CRITICO"
         elif s > 100: return "🟠 OVERLOAD"
-        elif s > 85: return "️ ATTENZIONE"
+        elif s > 85: return "⚠️ ATTENZIONE"
         else: return "🟢 OK"
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
     all_reps = pd.DataFrame({'sales_rep': active_list})
@@ -242,7 +240,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_w
 
 # =============================================================================
-# INTERFACCIA (INVARITATA RISPETTO A Codice_buono.txt)
+# INTERFACCIA
 # =============================================================================
 def main():
     st.markdown("""
@@ -262,12 +260,16 @@ def main():
     st.title("🎯 Field Force Downsizing Simulator")
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
     
+    # =============================================================================
+    # SIDEBAR: solo upload e parametri operativi
+    # =============================================================================
     with st.sidebar:
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         st.divider()
-        st.subheader(" Dati di Input")
+        
+        st.subheader("📁 Dati di Input")
         uploaded = st.file_uploader("Carica Excel (Clienti + Venditori)", type=['xlsx'])
         if not uploaded:
             st.info("👆 Carica il file Excel per iniziare")
@@ -304,7 +306,7 @@ def main():
             return
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
         clienti_con_rep = df_c['sales rep'].notna().sum()
-        st.caption(f" {clienti_con_rep:,} clienti hanno un sales rep assegnato")
+        st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
         st.subheader("🎮 Modalità")
         modo = st.radio("Scegli modalità:",
@@ -314,7 +316,7 @@ def main():
         st.subheader("⚙️ Parametri Simulazione")
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
-        dur_visita = st.slider("️ Durata media visita (min)", 40, 150, 90, step=5)
+        dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input(" Giorni lavorativi/anno", 180, 260, 220, step=5)
         pausa_pranzo = st.slider("️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
@@ -326,12 +328,20 @@ def main():
         reps = sorted(df_v['sales rep'].unique())
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
+        # RIMOSSA: matrice ABC da qui (spostata nel main content)
+    
+    # =============================================================================
+    # MAIN CONTENT: Matrice ABC (visibile subito dopo il titolo)
+    # =============================================================================
+    if uploaded:
+        # Salva df_c e col_vol in session state per accessibilità
+        st.session_state.df_c = df_c
+        st.session_state.col_vol = col_vol
         
-        # =============================================================================
-        # MATRICE ABC COMPLETA (ESATTAMENTE COME IN Codice_buono.txt)
-        # =============================================================================
+        st.divider()
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
+        
         if 'abc_vals' not in st.session_state:
             st.session_state.abc_vals = {
                 'da_a': 801, 'a_a': -1, 'freq_a': 24,
@@ -339,6 +349,7 @@ def main():
                 'da_c': 10, 'a_c': 300, 'freq_c': 3,
                 'da_na': 0, 'a_na': 9, 'freq_na': 0
             }
+        
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.markdown("**🟢 Classe A**")
@@ -351,12 +362,12 @@ def main():
             a_b = st.number_input("a <", key="a_b_input", value=st.session_state.abc_vals['a_b'], min_value=-1, step=1, help="-1 = infinito")
             freq_b = st.number_input("Visite/anno", key="freq_b_input", value=st.session_state.abc_vals['freq_b'], min_value=0, step=1)
         with col3:
-            st.markdown("** Classe C**")
+            st.markdown("**🔴 Classe C**")
             da_c = st.number_input("da ≥", key="da_c_input", value=st.session_state.abc_vals['da_c'], min_value=0, step=1)
             a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, step=1, help="-1 = infinito")
             freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
         with col4:
-            st.markdown("** Non Attivi**")
+            st.markdown("**🔵 Non Attivi**")
             da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
             a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
             freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
@@ -367,56 +378,70 @@ def main():
             'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na
         }
         min_vol = da_c
-        # Preview distribuzione
-        if uploaded:
-            try:
-                df_preview = df_c.copy()
-                df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
-                df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
-                dist = df_preview['classe'].value_counts()
-                col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
-                with col_prev1: st.metric("🟢 Classe A", f"{fmt_eu(dist.get('A', 0))}")
-                with col_prev2: st.metric("🟡 Classe B", f"{fmt_eu(dist.get('B', 0))}")
-                with col_prev3: st.metric("🔴 Classe C", f"{fmt_eu(dist.get('C', 0))}")
-                with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
-            except: pass
         
-        if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
-        if 'current_result' not in st.session_state: st.session_state.current_result = None
-        if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
-        if 'current_params' not in st.session_state: st.session_state.current_params = {}
-        run_sim = False
-        if st.session_state.get('trigger_auto_run', False):
-            st.session_state.trigger_auto_run = False
-            run_sim = True
-        if manual_run: run_sim = True
-        if run_sim:
-            with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
-                try:
-                    active_list = [r for r, s in rep_status.items() if s]
-                    if len(active_list) == 0:
-                        st.error("️ Seleziona almeno un venditore")
-                    else:
-                        res, df_w = run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
-                                                   freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
-                                                   max_stops_per_day, use_nearest_neighbor=use_nn)
-                        if res is None: st.error(df_w)
-                        else:
-                            st.session_state.current_result = res
-                            st.session_state.current_df_work = df_w
-                            st.session_state.current_params = {
-                                'active_list': active_list, 'ore_gg': ore_effettive_gg,
-                                'gg_lavoro': gg_lavoro, 'vel_media': vel_media, 'dur_visita': dur_visita,
-                                'max_stops': max_stops_per_day, 'reps': reps, 'use_nn': use_nn,
-                                'modo': modo, 'min_vol': min_vol
-                            }
-                            st.session_state.current_df_v = df_v
-                            st.success("✅ Calcolo completato!")
-                except Exception as e:
-                    st.error(f"❌ Errore: {e}")
-
+        # Preview distribuzione
+        try:
+            df_preview = df_c.copy()
+            df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
+            df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
+            dist = df_preview['classe'].value_counts()
+            col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
+            with col_prev1: st.metric("🟢 Classe A", f"{fmt_eu(dist.get('A', 0))}")
+            with col_prev2: st.metric("🟡 Classe B", f"{fmt_eu(dist.get('B', 0))}")
+            with col_prev3: st.metric("🔴 Classe C", f"{fmt_eu(dist.get('C', 0))}")
+            with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
+        except: pass
+        
+        # Pulsante per applicare/aggiornare la matrice
+        if st.button("🔄 Aggiorna Classificazione", use_container_width=True):
+            st.session_state.abc_updated = True
+            st.rerun()
+    
     # =============================================================================
-    # VISUALIZZAZIONE RISULTATI (Fuori dalla sidebar)
+    # LOGICA ESECUZIONE
+    # =============================================================================
+    if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
+    if 'current_result' not in st.session_state: st.session_state.current_result = None
+    if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
+    if 'current_params' not in st.session_state: st.session_state.current_params = {}
+    
+    run_sim = False
+    if st.session_state.get('trigger_auto_run', False):
+        st.session_state.trigger_auto_run = False
+        run_sim = True
+    if manual_run: run_sim = True
+    
+    if run_sim and uploaded:
+        with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
+            try:
+                active_list = [r for r, s in rep_status.items() if s]
+                if len(active_list) == 0:
+                    st.error("⚠️ Seleziona almeno un venditore")
+                else:
+                    # Recupera valori matrice aggiornati
+                    abc = st.session_state.abc_vals
+                    res, df_w = run_simulation(df_c, df_v, active_list, col_vol, 
+                                               abc['da_a'], abc['da_b'], abc['da_c'],
+                                               abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                                               dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
+                                               max_stops_per_day, use_nearest_neighbor=use_nn)
+                    if res is None: st.error(df_w)
+                    else:
+                        st.session_state.current_result = res
+                        st.session_state.current_df_work = df_w
+                        st.session_state.current_params = {
+                            'active_list': active_list, 'ore_gg': ore_effettive_gg,
+                            'gg_lavoro': gg_lavoro, 'vel_media': vel_media, 'dur_visita': dur_visita,
+                            'max_stops': max_stops_per_day, 'reps': reps, 'use_nn': use_nn,
+                            'modo': modo, 'min_vol': min_vol
+                        }
+                        st.session_state.current_df_v = df_v
+                        st.success("✅ Calcolo completato!")
+            except Exception as e:
+                st.error(f"❌ Errore: {e}")
+    
+    # =============================================================================
+    # VISUALIZZAZIONE RISULTATI
     # =============================================================================
     if st.session_state.current_result is not None:
         res = st.session_state.current_result
@@ -491,7 +516,7 @@ def main():
         st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
         if len(df_map) == 0:
-            st.warning("️ Nessun cliente da visualizzare")
+            st.warning("⚠️ Nessun cliente da visualizzare")
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
             fig = go.Figure()
@@ -514,7 +539,7 @@ def main():
             for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                 df_c = df_map[df_map['classe'] == classe]
                 if len(df_c) > 0:
-                    # FIX STREAMLIT CLOUD: hoverdata sostituito con text/hoverinfo
+                    # FIX STREAMLIT CLOUD: hoverdata → text/hoverinfo
                     fig.add_trace(go.Scattermapbox(
                         lat=df_c['latitudine'], lon=df_c['longitudine'],
                         mode='markers', marker=dict(size=size, color=color, opacity=0.8),
@@ -526,7 +551,7 @@ def main():
                 subset=['latitudine', 'longitudine']
             )
             if len(df_v_active) > 0:
-                # FIX STREAMLIT CLOUD: rimosso symbol e line non supportati
+                # FIX STREAMLIT CLOUD: rimosso symbol/line non supportati
                 fig.add_trace(go.Scattermapbox(
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
