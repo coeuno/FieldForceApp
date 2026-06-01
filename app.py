@@ -324,7 +324,11 @@ def main():
         reps = sorted(df_v['sales rep'].unique())
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
-        st.subheader(" Matrice Classificazione ABC & Frequenze")
+        
+        # =============================================================================
+        # MATRICE ABC COMPLETA (REINSERITA ESATTAMENTE COME NEL CODICE ORIGINALE)
+        # =============================================================================
+        st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
         if 'abc_vals' not in st.session_state:
             st.session_state.abc_vals = {
@@ -361,6 +365,7 @@ def main():
             'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na
         }
         min_vol = da_c
+        # Preview distribuzione
         if uploaded:
             try:
                 df_preview = df_c.copy()
@@ -368,11 +373,12 @@ def main():
                 df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
                 dist = df_preview['classe'].value_counts()
                 col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
-                with col_prev1: st.metric(" Classe A", f"{fmt_eu(dist.get('A', 0))}")
+                with col_prev1: st.metric("🟢 Classe A", f"{fmt_eu(dist.get('A', 0))}")
                 with col_prev2: st.metric("🟡 Classe B", f"{fmt_eu(dist.get('B', 0))}")
-                with col_prev3: st.metric(" Classe C", f"{fmt_eu(dist.get('C', 0))}")
+                with col_prev3: st.metric("🔴 Classe C", f"{fmt_eu(dist.get('C', 0))}")
                 with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
             except: pass
+        
         if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
         if 'current_result' not in st.session_state: st.session_state.current_result = None
         if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
@@ -412,7 +418,7 @@ def main():
              st.warning("⚠️ La simulazione non è riuscita. Controlla i parametri o ricarica il file.")
 
     # =============================================================================
-    # VISUALIZZAZIONE RISULTATI (Solo se la simulazione è andata a buon fine)
+    # VISUALIZZAZIONE RISULTATI
     # =============================================================================
     if st.session_state.current_result is not None:
         res = st.session_state.current_result
@@ -510,7 +516,6 @@ def main():
             for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                 df_c = df_map[df_map['classe'] == classe]
                 if len(df_c) > 0:
-                    # FIX STREAMLIT CLOUD: hoverdata sostituito con text
                     fig.add_trace(go.Scattermapbox(
                         lat=df_c['latitudine'], lon=df_c['longitudine'],
                         mode='markers', marker=dict(size=size, color=color, opacity=0.8),
@@ -522,7 +527,6 @@ def main():
                 subset=['latitudine', 'longitudine']
             )
             if len(df_v_active) > 0:
-                # FIX STREAMLIT CLOUD: rimosso symbol e line non supportati
                 fig.add_trace(go.Scattermapbox(
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
