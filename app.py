@@ -469,7 +469,12 @@ def main():
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
 
         # NUOVI DEFAULT: D=0-100, C=101-400, B=401-800, A=801+
-        if 'abc_vals' not in st.session_state:
+        # Forza reset matrice se versione cambiata
+        if 'abc_version' not in st.session_state:
+            st.session_state.abc_version = 2
+            st.session_state.abc_vals = None
+
+        if 'abc_vals' not in st.session_state or st.session_state.abc_vals is None:
             st.session_state.abc_vals = {
                 'da_a': 801, 'a_a': -1, 'freq_a': 24,
                 'da_b': 401, 'a_b': 800, 'freq_b': 16,
@@ -647,7 +652,7 @@ def main():
         }])
         disp = pd.concat([disp, total_row], ignore_index=True)
 
-        # Formattazione
+        # Formattazione valori
         disp_fmt = disp.copy()
         for col in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
@@ -656,50 +661,62 @@ def main():
         disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
         disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
 
-        def color_sat(v):
-            if pd.isna(v): return ''
+        # Genera HTML tabella con stile completo
+        def get_sat_color(v):
             try:
                 clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
                 n = float(clean)
-                if n > 110: return 'background-color:#ffcdd2;color:#b71c1c'
-                elif n > 100: return 'background-color:#ffe0b2;color:#e65100'
-                elif n > 85: return 'background-color:#fff9c4;color:#f57f17'
-                else: return 'background-color:#c8e6c9;color:#1b5e20'
-            except: return ''
+                if n > 110: return '#ffcdd2', '#b71c1c'
+                elif n > 100: return '#ffe0b2', '#e65100'
+                elif n > 85: return '#fff9c4', '#f57f17'
+                else: return '#c8e6c9', '#1b5e20'
+            except:
+                return '', ''
 
-        def style_totale(row):
-            if row.name == len(disp_fmt) - 1:
-                return ['color: #000000 !important; font-weight: bold; background-color: #e8e8e8; border-top: 2px solid #333333;'] * len(row)
-            return [''] * len(row)
+        # Costruisci HTML manualmente per controllo totale
+        html_rows = []
+        headers = list(disp_fmt.columns)
 
-        styled = (disp_fmt.style
-                  .apply(style_totale, axis=1)
-                  .map(color_sat, subset=['Sat %']))
+        for idx, row in disp_fmt.iterrows():
+            is_total = (idx == len(disp_fmt) - 1)
+            cells = []
+            for col in headers:
+                val = row[col]
+                if col == 'Sat %':
+                    bg, fg = get_sat_color(val)
+                    if is_total:
+                        style = f'background-color:{bg};color:{fg};font-weight:bold;text-align:center;padding:6px 4px;border-top:3px solid #333;'
+                    else:
+                        style = f'background-color:{bg};color:{fg};text-align:center;padding:6px 4px;'
+                elif is_total:
+                    style = 'background-color:#e8e8e8;color:#000000;font-weight:bold;text-align:center;padding:6px 4px;border-top:3px solid #333;'
+                else:
+                    style = 'text-align:center;padding:6px 4px;'
+                cells.append(f'<td style="{style}">{val}</td>')
 
-        # Altezza dinamica per mostrare tutto senza scroll interno
-        row_height = 35
-        header_height = 50
-        table_height = (len(disp_fmt) + 1) * row_height + header_height
-
-        # Column config per centrare tutto
-        col_cfg = {}
-        for c in disp_fmt.columns:
-            if c in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
-                col_cfg[c] = st.column_config.NumberColumn(c, width="small", alignment="center")
-            elif c in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG', 'Vis/GG']:
-                col_cfg[c] = st.column_config.NumberColumn(c, width="small", alignment="center")
-            elif c == 'Sat %':
-                col_cfg[c] = st.column_config.TextColumn(c, width="small", alignment="center")
+            if is_total:
+                html_rows.append(f'<tr style="font-weight:bold;">' + ''.join(cells) + '</tr>')
             else:
-                col_cfg[c] = st.column_config.TextColumn(c, alignment="center")
+                html_rows.append('<tr>' + ''.join(cells) + '</tr>')
 
-        st.dataframe(
-            styled,
-            use_container_width=True,
-            hide_index=True,
-            height=table_height,
-            column_config=col_cfg
+        header_cells = []
+        for col in headers:
+            header_cells.append(f'<th style="background-color:#f0f0f0;color:#333;font-weight:bold;text-align:center;padding:8px 4px;border-bottom:2px solid #ccc;">{col}</th>')
+
+        html_table = (
+            '<style>'
+            '.kpi-table { border-collapse: collapse; width: 100%; font-family: "Source Sans Pro", sans-serif; font-size: 14px; }'
+            '.kpi-table th { position: sticky; top: 0; z-index: 1; }'
+            '.kpi-table tr:nth-child(even) { background-color: #fafafa; }'
+            '.kpi-table tr:hover { background-color: #f5f5f5; }'
+            '</style>'
+            '<table class="kpi-table">'
+            '<thead><tr>' + ''.join(header_cells) + '</tr></thead>'
+            '<tbody>' + ''.join(html_rows) + '</tbody>'
+            '</table>'
         )
+
+        st.markdown(html_table, unsafe_allow_html=True)
 
         st.divider()
         st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
