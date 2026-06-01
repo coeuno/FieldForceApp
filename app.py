@@ -371,6 +371,199 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # =============================================================================
 # INTERFACCIA
 # =============================================================================
+
+# =============================================================================
+# FUNZIONI DOWNSIZE — RIASSENZIONE CLIENTI
+# =============================================================================
+
+def compute_neighbor_reps(removed_rep, df_c, df_v, active_reps, top_n=8):
+    """
+    Trova i venditori limitrofi al venditore rimosso.
+    Score spaziale = 0.4*(1/distanza_media) + 0.4*(clienti_per_cui_è_NN) + 0.2*(1/distanza_minima)
+    """
+    clients_removed = df_c[df_c['sales rep'] == removed_rep]
+    if len(clients_removed) == 0:
+        return []
+
+    c_lats = clients_removed['latitudine'].values
+    c_lons = clients_removed['longitudine'].values
+    n_cli = len(clients_removed)
+
+    scores = []
+    for rep in active_reps:
+        if rep == removed_rep:
+            continue
+        v_row = df_v[df_v['sales rep'] == rep]
+        if len(v_row) == 0:
+            continue
+        v_lat = v_row['latitudine'].iloc[0]
+        v_lon = v_row['longitudine'].iloc[0]
+        if pd.isna(v_lat) or pd.isna(v_lon):
+            continue
+
+        dists = haversine_km(c_lons, c_lats, v_lon, v_lat)
+        avg_dist = float(np.mean(dists))
+        min_dist = float(np.min(dists))
+
+        # Quanti clienti del rimosso hanno 'rep' come nearest neighbor?
+        nn_count = 0
+        for _, row in clients_removed.iterrows():
+            best_dist = float('inf')
+            best_rep = None
+            for r2 in active_reps:
+                if r2 == removed_rep:
+                    continue
+                v2 = df_v[df_v['sales rep'] == r2]
+                if len(v2) > 0 and pd.notna(v2['latitudine'].iloc[0]):
+                    d2 = haversine_km(row['longitudine'], row['latitudine'],
+                                      v2['longitudine'].iloc[0], v2['latitudine'].iloc[0])
+                    if d2 < best_dist:
+                        best_dist = d2
+                        best_rep = r2
+            if best_rep == rep:
+                nn_count += 1
+
+        spatial_score = (0.4 * (1.0 / (avg_dist + 1.0)) + 
+                        0.4 * (nn_count / max(n_cli, 1)) + 
+                        0.2 * (1.0 / (min_dist + 1.0)))
+        scores.append({
+            'rep': rep,
+            'score': spatial_score,
+            'avg_dist_km': round(avg_dist, 1),
+            'min_dist_km': round(min_dist, 1),
+            'nn_count': int(nn_count),
+            'home_lat': float(v_lat),
+            'home_lon': float(v_lon),
+            'n_clients': n_cli
+        })
+
+    scores.sort(key=lambda x: x['score'], reverse=True)
+    return scores[:top_n]
+
+
+def auto_reassign_greedy(removed_rep, selected_receivers, df_c, df_v, current_result,
+                         dur_visita, freq_a, freq_b, freq_c, ore_gg_eff, gg_lavoro,
+                         col_vol, lambda_sat=1.5, mu_overload=3.0):
+    """
+    Algoritmo GSSH (Greedy Spatial-Saturation Heuristic).
+    Riassegna clienti del venditore rimosso privilegiando distanza e saturazione residua.
+    """
+    removed_mask = df_c['sales rep'] == removed_rep
+    removed_clients = df_c[removed_mask].copy()
+
+    if len(removed_clients) == 0:
+        return df_c.copy(), []
+
+    # Capacità e ore residue
+    cap = ore_gg_eff * gg_lavoro
+    residual_hours = {}
+    current_sat = {}
+    for _, row in current_result.iterrows():
+        rep = row['sales_rep']
+        used = row['ore_totali_annue']
+        residual_hours[rep] = max(0.0, cap - used)
+        current_sat[rep] = row['saturazione_pct']
+
+    # Coordinate riceventi (home base)
+    rec_coords = {}
+    for rep in selected_receivers:
+        v = df_v[df_v['sales rep'] == rep]
+        if len(v) > 0 and pd.notna(v['latitudine'].iloc[0]):
+            rec_coords[rep] = (float(v['latitudine'].iloc[0]), float(v['longitudine'].iloc[0]))
+        else:
+            sub = df_c[df_c['sales rep'] == rep]
+            if len(sub) > 0:
+                rec_coords[rep] = (float(sub['latitudine'].mean()), float(sub['longitudine'].mean()))
+
+    if not rec_coords:
+        return df_c.copy(), []
+
+    # Assicurati che ci sia la colonna classe
+    freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c, 'D': 0}
+    if 'classe' not in removed_clients.columns:
+        removed_clients['classe'] = 'C'
+
+    # Ordina: A prima, poi B, poi C, poi D; all'interno per volume decrescente
+    classe_order = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+    removed_clients['_sort_key'] = removed_clients['classe'].map(classe_order)
+    if col_vol and col_vol in removed_clients.columns:
+        removed_clients[col_vol] = pd.to_numeric(removed_clients[col_vol], errors='coerce').fillna(0)
+        removed_clients = removed_clients.sort_values(['_sort_key', col_vol], ascending=[True, False])
+    else:
+        removed_clients = removed_clients.sort_values('_sort_key')
+
+    # Stima carico incrementale in ore/anno per un cliente
+    def est_load(row):
+        cls = row.get('classe', 'C')
+        if cls == 'D':
+            return 0.0
+        freq = freq_map.get(cls, 12)
+        ore_vis = (freq * dur_visita) / 60.0
+        # Proxy viaggio: +30% sulle ore visita per viaggio semplificato
+        # (dopo il commit verrà ricalcolato esattamente con il tour NN)
+        return ore_vis * 1.35
+
+    new_assignments = []
+    residual_dynamic = residual_hours.copy()
+
+    for idx, row in removed_clients.iterrows():
+        c_lat = row['latitudine']
+        c_lon = row['longitudine']
+        if pd.isna(c_lat) or pd.isna(c_lon):
+            continue
+
+        load = est_load(row)
+        best_rep = None
+        best_score = float('inf')
+
+        for rep in selected_receivers:
+            if rep not in rec_coords:
+                continue
+            r_lat, r_lon = rec_coords[rep]
+            dist = haversine_km(c_lon, c_lat, r_lon, r_lat)
+
+            res = residual_dynamic.get(rep, 0.0)
+            sat_pct = 100.0 * (1.0 - res / cap) if cap > 0 else 0.0
+
+            penalty = 1.0
+            if res > 0:
+                penalty += lambda_sat * (sat_pct / 100.0)
+            else:
+                penalty += mu_overload  # saturo!
+
+            if sat_pct > 100.0:
+                penalty += mu_overload * ((sat_pct - 100.0) / 50.0)
+
+            score = dist * penalty
+            if score < best_score:
+                best_score = score
+                best_rep = rep
+
+        if best_rep:
+            new_assignments.append((idx, best_rep, load))
+            residual_dynamic[best_rep] = max(0.0, residual_dynamic.get(best_rep, 0.0) - load)
+
+    # Applica assegnazioni
+    df_c_new = df_c.copy()
+    for idx, rep, _ in new_assignments:
+        df_c_new.at[idx, 'sales rep'] = rep
+        if 'assigned_rep' in df_c_new.columns:
+            df_c_new.at[idx, 'assigned_rep'] = rep
+
+    return df_c_new, new_assignments
+
+
+def get_saturation_badge(sat_pct):
+    if sat_pct > 110:
+        return "🔴 CRITICO", "#ffcdd2", "#b71c1c"
+    elif sat_pct > 100:
+        return "🟠 OVERLOAD", "#ffe0b2", "#e65100"
+    elif sat_pct > 85:
+        return "⚠️ ATTENZIONE", "#fff9c4", "#f57f17"
+    else:
+        return "🟢 OK", "#c8e6c9", "#1b5e20"
+
+
 def main():
     st.markdown("""
     <style>
@@ -457,6 +650,334 @@ def main():
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
+        # =============================================================================
+        # TRIGGER DOWNSIZE — rilevamento rimozione venditore
+        # =============================================================================
+        active_list_sidebar = [r for r, s in rep_status.items() if s]
+        if 'active_snapshot' not in st.session_state:
+            st.session_state.active_snapshot = set(reps)
+
+        if st.session_state.get('downsize_pending', False):
+            # Durante un downsize, blocca altre deselezioni
+            removed_rep = st.session_state.removed_rep
+            for r in reps:
+                if r != removed_rep and not st.session_state.get(f"rep_{r}", True):
+                    st.session_state[f"rep_{r}"] = True
+            if st.session_state.get(f"rep_{removed_rep}", True):
+                st.session_state[f"rep_{removed_rep}"] = False
+            st.warning(f"⚠️ Downsize in corso per **{removed_rep}**. Completa o annulla per continuare.")
+        else:
+            removed = st.session_state.active_snapshot - set(active_list_sidebar)
+            if removed:
+                removed_rep = sorted(list(removed))[0]
+                # Entra in stato pending
+                st.session_state.downsize_pending = True
+                st.session_state.removed_rep = removed_rep
+                st.session_state.pre_downsize_df_c = df_c.copy()
+                st.session_state.pre_downsize_active = list(st.session_state.active_snapshot)
+                st.session_state.downsize_candidates = []
+                st.session_state.downsize_selected_receivers = []
+                st.session_state.downsize_preview_df = None
+                st.session_state.downsize_assignments = []
+                st.session_state.downsize_preview_result = None
+                st.rerun()
+            else:
+                st.session_state.active_snapshot = set(active_list_sidebar)
+
+
+
+    # =============================================================================
+    # PANNELLO DOWNSIZE INTERATTIVO
+    # =============================================================================
+    if st.session_state.get('downsize_pending', False) and uploaded:
+        removed_rep = st.session_state.removed_rep
+        pre_df = st.session_state.pre_downsize_df_c
+        n_removed = len(pre_df[pre_df['sales rep'] == removed_rep])
+
+        st.markdown("""
+        <style>
+        .downsize-box {
+            background: linear-gradient(135deg, #2d132c 0%, #1a1a2e 100%);
+            border: 2px solid #e94560;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 20px rgba(233, 69, 96, 0.15);
+        }
+        .downsize-title { color: #e94560; font-size: 28px; font-weight: 700; margin: 0 0 8px 0; }
+        .downsize-sub  { color: #ccc; font-size: 16px; margin: 0; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div class="downsize-box">
+            <div class="downsize-title">⚠️ DOWNSIZE IN CORSO</div>
+            <div class="downsize-sub">
+                Venditore rimosso: <b>{removed_rep}</b> &nbsp;|&nbsp; 
+                Clienti da riassegnare: <b>{n_removed}</b>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Calcola candidati limitrofi se non già fatto
+        if not st.session_state.get('downsize_candidates', []):
+            active_for_neighbor = [r for r in reps if r != removed_rep]
+            candidates = compute_neighbor_reps(
+                removed_rep, pre_df, df_v, active_for_neighbor, top_n=8
+            )
+            st.session_state.downsize_candidates = candidates
+
+        candidates = st.session_state.downsize_candidates
+
+        if not candidates:
+            st.error("❌ Nessun venditore limitrofo trovato con coordinate valide.")
+            if st.button("🔙 Chiudi e Ripristina", use_container_width=True):
+                st.session_state[f"rep_{removed_rep}"] = True
+                st.session_state.downsize_pending = False
+                st.session_state.removed_rep = None
+                st.session_state.downsize_candidates = []
+                st.rerun()
+        else:
+            st.subheader("👥 1. Seleziona i venditori riceventi")
+            st.caption("Scegli uno o più venditori che riceveranno i clienti. Ordinati per prossimità territoriale.")
+
+            # Recupera valori ABC per stima carico
+            abc_vals = st.session_state.get('abc_vals', {
+                'freq_a': 24, 'freq_b': 16, 'freq_c': 12
+            })
+            fa = abc_vals.get('freq_a', 24)
+            fb = abc_vals.get('freq_b', 16)
+            fc = abc_vals.get('freq_c', 12)
+
+            # Layout candidati in colonne
+            n_cols = min(len(candidates), 3)
+            cols = st.columns(n_cols)
+            selected_receivers = []
+
+            for i, cand in enumerate(candidates):
+                rep = cand['rep']
+                with cols[i % n_cols]:
+                    # Recupera saturazione dal current_result
+                    sat_pre = 0.0
+                    sat_label = "N/D"
+                    if st.session_state.current_result is not None:
+                        sat_row = st.session_state.current_result[
+                            st.session_state.current_result['sales_rep'] == rep
+                        ]
+                        if len(sat_row) > 0:
+                            sat_pre = sat_row['saturazione_pct'].iloc[0]
+                            sat_label = f"{sat_pre:.1f}%"
+
+                    badge, bg, fg = get_saturation_badge(sat_pre)
+
+                    label_text = f"**{rep}**\n\n{badge} Sat: {sat_label}\n\n📍 Distanza media: **{cand['avg_dist_km']} km**\n\n🎯 Clienti vicini: **{cand['nn_count']}** / {cand['n_clients']}"
+                    chk = st.checkbox(label_text, key=f"recv_{rep}")
+                    if chk:
+                        selected_receivers.append(rep)
+
+            st.session_state.downsize_selected_receivers = selected_receivers
+
+            # Bottoni azione
+            btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+
+            with btn_col1:
+                disable_auto = len(selected_receivers) == 0 or st.session_state.current_result is None
+                if st.session_state.current_result is None:
+                    st.caption("⚠️ Lancia prima una simulazione per avere i dati di saturazione.")
+
+                if st.button("🤖 Auto-Alloca Clienti", disabled=disable_auto, use_container_width=True, type="primary"):
+                    df_new, assigns = auto_reassign_greedy(
+                        removed_rep,
+                        selected_receivers,
+                        st.session_state.pre_downsize_df_c,
+                        df_v,
+                        st.session_state.current_result,
+                        dur_visita,
+                        fa, fb, fc,
+                        ore_effettive_gg,
+                        gg_lavoro,
+                        st.session_state.get('col_vol')
+                    )
+                    st.session_state.downsize_preview_df = df_new
+                    st.session_state.downsize_assignments = assigns
+                    st.rerun()
+
+            with btn_col2:
+                disable_confirm = st.session_state.downsize_preview_df is None
+                if st.button("✅ Conferma e Applica", disabled=disable_confirm, use_container_width=True):
+                    # Salva scenario pre-downsize per confronto
+                    if st.session_state.current_result is not None:
+                        st.session_state.pre_downsize_result = st.session_state.current_result.copy()
+                        st.session_state.pre_downsize_df_work = st.session_state.current_df_work.copy() if st.session_state.current_df_work is not None else None
+                        st.session_state.pre_downsize_params = st.session_state.current_params.copy() if st.session_state.current_params else {}
+
+                    # Applica modifiche
+                    st.session_state.df_c = st.session_state.downsize_preview_df.copy()
+
+                    # Aggiorna active_snapshot (rimuovi definitivamente)
+                    new_active = [r for r in st.session_state.pre_downsize_active if r != removed_rep]
+                    st.session_state.active_snapshot = set(new_active)
+
+                    # Pulisci stato downsize
+                    st.session_state.downsize_pending = False
+                    st.session_state.removed_rep = None
+                    st.session_state.downsize_candidates = []
+                    st.session_state.downsize_selected_receivers = []
+                    st.session_state.downsize_preview_df = None
+                    st.session_state.downsize_assignments = []
+
+                    # Forza il venditore rimosso a False nelle checkbox
+                    st.session_state[f"rep_{removed_rep}"] = False
+
+                    # Trigger ricalcolo simulazione
+                    st.session_state.trigger_auto_run = True
+                    st.rerun()
+
+            with btn_col3:
+                if st.button("❌ Annulla e Ripristina", use_container_width=True):
+                    st.session_state[f"rep_{removed_rep}"] = True
+                    st.session_state.downsize_pending = False
+                    st.session_state.removed_rep = None
+                    st.session_state.downsize_candidates = []
+                    st.session_state.downsize_selected_receivers = []
+                    st.session_state.downsize_preview_df = None
+                    st.session_state.downsize_assignments = []
+                    st.session_state.active_snapshot = set(st.session_state.pre_downsize_active)
+                    st.rerun()
+
+            # =============================================================================
+            # PREVIEW RIASSENZIONE
+            # =============================================================================
+            if st.session_state.downsize_preview_df is not None:
+                st.divider()
+                st.subheader("📊 2. Preview Riassegnazione")
+
+                assigns = st.session_state.downsize_assignments
+                cap = ore_effettive_gg * gg_lavoro
+
+                preview_rows = []
+                for rep in selected_receivers:
+                    n_assigned = sum(1 for _, r, _ in assigns if r == rep)
+                    load_added = sum(l for _, r, l in assigns if r == rep)
+
+                    sat_pre = 0.0
+                    if st.session_state.current_result is not None:
+                        row_sat = st.session_state.current_result[
+                            st.session_state.current_result['sales_rep'] == rep
+                        ]
+                        if len(row_sat) > 0:
+                            sat_pre = row_sat['saturazione_pct'].iloc[0]
+
+                    sat_post = sat_pre + (load_added / cap * 100.0) if cap > 0 else sat_pre
+
+                    preview_rows.append({
+                        'Ricevente': rep,
+                        'Clienti Assegnati': n_assigned,
+                        'Sat Pre': f"{sat_pre:.1f}%",
+                        'Sat Post (stim.)': f"{sat_post:.1f}%",
+                        'Δ Sat': f"{sat_post - sat_pre:+.1f}%",
+                        'Ore Aggiunte (stim.)': f"{load_added:.1f}h"
+                    })
+
+                if preview_rows:
+                    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+
+                # Mappa preview
+                st.subheader("🗺️ 3. Mappa Preview Spostamenti")
+                df_prev = st.session_state.downsize_preview_df
+                df_pre = st.session_state.pre_downsize_df_c
+
+                # Clienti spostati
+                moved_mask = (df_prev['sales rep'] != df_pre['sales rep']) & (df_pre['sales rep'] == removed_rep)
+                df_moved = df_prev[moved_mask].copy()
+
+                fig_d = go.Figure()
+                colors_d = px.colors.qualitative.Bold
+                rec_color_map = {rep: colors_d[i % len(colors_d)] for i, rep in enumerate(selected_receivers)}
+
+                # Clienti per nuovo venditore
+                for rep in selected_receivers:
+                    sub = df_moved[df_moved['sales rep'] == rep]
+                    if len(sub) > 0:
+                        fig_d.add_trace(go.Scattermapbox(
+                            lat=sub['latitudine'], lon=sub['longitudine'],
+                            mode='markers',
+                            marker=dict(size=10, color=rec_color_map[rep], opacity=0.9),
+                            name=f"→ {rep} ({len(sub)} clienti)",
+                            hoverinfo='name'
+                        ))
+                        # Linee verso home base
+                        v_home = df_v[df_v['sales rep'] == rep]
+                        if len(v_home) > 0 and pd.notna(v_home['latitudine'].iloc[0]):
+                            for _, row in sub.iterrows():
+                                fig_d.add_trace(go.Scattermapbox(
+                                    mode='lines',
+                                    lat=[row['latitudine'], v_home['latitudine'].iloc[0]],
+                                    lon=[row['longitudine'], v_home['longitudine'].iloc[0]],
+                                    line=dict(width=1, color=rec_color_map[rep]),
+                                    opacity=0.4,
+                                    showlegend=False,
+                                    hoverinfo='skip'
+                                ))
+
+                # Home base riceventi
+                df_v_recv = df_v[df_v['sales rep'].isin(selected_receivers)].dropna(subset=['latitudine', 'longitudine'])
+                if len(df_v_recv) > 0:
+                    fig_d.add_trace(go.Scattermapbox(
+                        lat=df_v_recv['latitudine'], lon=df_v_recv['longitudine'],
+                        mode='markers',
+                        marker=dict(size=16, color='white', opacity=0.9,
+                                   symbol='star'),
+                        name='⭐ Home Base Riceventi',
+                        hoverinfo='name'
+                    ))
+
+                # Home base venditore rimosso (grigia, trasparente)
+                v_removed = df_v[df_v['sales rep'] == removed_rep]
+                if len(v_removed) > 0 and pd.notna(v_removed['latitudine'].iloc[0]):
+                    fig_d.add_trace(go.Scattermapbox(
+                        lat=v_removed['latitudine'], lon=v_removed['longitudine'],
+                        mode='markers',
+                        marker=dict(size=18, color='gray', opacity=0.5,
+                                   symbol='x'),
+                        name=f'❌ {removed_rep} (rimosso)',
+                        hoverinfo='name'
+                    ))
+
+                fig_d.update_layout(
+                    mapbox_style="carto-positron",
+                    mapbox_zoom=6,
+                    mapbox_center=dict(lat=df_moved['latitudine'].mean() if len(df_moved)>0 else 42.5,
+                                        lon=df_moved['longitudine'].mean() if len(df_moved)>0 else 12.5),
+                    margin=dict(r=0, t=30, l=0, b=0),
+                    height=500,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+                               bgcolor='rgba(255,255,255,0.9)')
+                )
+                st.plotly_chart(fig_d, use_container_width=True)
+
+                # Alert clienti lontani
+                distant = []
+                for _, row in df_moved.iterrows():
+                    new_rep = row['sales rep']
+                    v_new = df_v[df_v['sales rep'] == new_rep]
+                    if len(v_new) > 0:
+                        d = haversine_km(row['longitudine'], row['latitudine'],
+                                         v_new['longitudine'].iloc[0], v_new['latitudine'].iloc[0])
+                        if d > 50:
+                            distant.append(f"{row.get('ragione sociale','Cliente')} → {new_rep} ({d:.1f} km)")
+
+                if distant:
+                    with st.expander(f"⚠️ {len(distant)} clienti spostati oltre 50 km — Review consigliata"):
+                        for item in distant[:10]:
+                            st.write(f"• {item}")
+                        if len(distant) > 10:
+                            st.write(f"... e altri {len(distant)-10}")
+
+        st.divider()
+        # Blocca il resto dell'interfaccia durante il downsize
+        st.stop()
+
     # =============================================================================
     # MAIN CONTENT: Matrice ABC
     # =============================================================================
@@ -542,7 +1063,7 @@ def main():
         run_sim = True
     if manual_run: run_sim = True
 
-    if run_sim and uploaded:
+    if run_sim and uploaded and not st.session_state.get('downsize_pending', False):
         with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
             try:
                 active_list = [r for r, s in rep_status.items() if s]
@@ -788,6 +1309,64 @@ def main():
         export_df['timestamp'] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
         st.download_button("📥 Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
+
+        # =============================================================================
+        # CONFRONTO PRE / POST DOWNSIZE
+        # =============================================================================
+        if 'pre_downsize_result' in st.session_state and st.session_state.pre_downsize_result is not None:
+            st.divider()
+            st.subheader("📊 Confronto Prima / Dopo Downsize")
+            st.caption("Confronto tra lo scenario immediatamente precedente al downsize e lo scenario attuale.")
+
+            pre_res = st.session_state.pre_downsize_result
+            post_res = res  # risultato corrente
+
+            c_pre1, c_pre2, c_pre3, c_pre4 = st.columns(4)
+            with c_pre1:
+                delta_v = len(post_res) - len(pre_res)
+                st.metric("Venditori Attivi", f"{len(pre_res)}", f"{delta_v:+d}")
+            with c_pre2:
+                delta_sat_m = post_res['saturazione_pct'].mean() - pre_res['saturazione_pct'].mean()
+                st.metric("Sat. Media", f"{pre_res['saturazione_pct'].mean():.1f}%", f"{delta_sat_m:+.1f}%")
+            with c_pre3:
+                delta_sat_x = post_res['saturazione_pct'].max() - pre_res['saturazione_pct'].max()
+                st.metric("Sat. Massima", f"{pre_res['saturazione_pct'].max():.1f}%", f"{delta_sat_x:+.1f}%")
+            with c_pre4:
+                delta_km = post_res['km_annui'].sum() - pre_res['km_annui'].sum()
+                st.metric("Km Annui Totali", f"{pre_res['km_annui'].sum():,.0f}", f"{delta_km:+,.0f}")
+
+            # Tabella dettaglio delta per venditore
+            merge_compare = pre_res[['sales_rep','saturazione_pct','n_clienti','km_annui']].rename(
+                columns={'saturazione_pct':'sat_pre','n_clienti':'cli_pre','km_annui':'km_pre'}
+            ).merge(
+                post_res[['sales_rep','saturazione_pct','n_clienti','km_annui']].rename(
+                    columns={'saturazione_pct':'sat_post','n_clienti':'cli_post','km_annui':'km_post'}
+                ), on='sales_rep', how='outer'
+            ).fillna(0)
+
+            merge_compare['Δ Sat'] = merge_compare['sat_post'] - merge_compare['sat_pre']
+            merge_compare['Δ Clienti'] = merge_compare['cli_post'] - merge_compare['cli_pre']
+            merge_compare['Δ Km'] = merge_compare['km_post'] - merge_compare['km_pre']
+
+            st.dataframe(
+                merge_compare[['sales_rep','sat_pre','sat_post','Δ Sat','cli_pre','cli_post','Δ Clienti','km_pre','km_post','Δ Km']]
+                .rename(columns={
+                    'sales_rep':'Venditore','sat_pre':'Sat Pre','sat_post':'Sat Post',
+                    'cli_pre':'Cli Pre','cli_post':'Cli Post',
+                    'km_pre':'Km Pre','km_post':'Km Post'
+                })
+                .style.applymap(lambda v: 'color: #e94560; font-weight: bold' if isinstance(v, float) and v > 0 else 'color: #4ecca3' if isinstance(v, float) and v < 0 else '', subset=['Δ Sat','Δ Clienti','Δ Km']),
+                use_container_width=True, hide_index=True
+            )
+
+            if st.button("🗑️ Chiudi Confronto (libera memoria)", use_container_width=True):
+                del st.session_state['pre_downsize_result']
+                if 'pre_downsize_df_work' in st.session_state:
+                    del st.session_state['pre_downsize_df_work']
+                if 'pre_downsize_params' in st.session_state:
+                    del st.session_state['pre_downsize_params']
+                st.rerun()
+
     else:
         st.info("📂 Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
 
