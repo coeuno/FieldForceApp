@@ -24,6 +24,13 @@ def fmt_eu(value, decimals=0, suffix='', prefix=''):
     except:
         return str(value)
 
+def get_alert(s):
+    """Restituisce lo stato di saturazione."""
+    if s > 110: return "🔴 CRITICO"
+    elif s > 100: return "🟠 OVERLOAD"
+    elif s > 85: return "⚠️ ATTENZIONE"
+    else: return "🟢 OK"
+
 # =============================================================================
 # CONFIGURAZIONE (3 ELEMENTI RICHIESTI)
 # =============================================================================
@@ -145,7 +152,7 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
 
 
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day,
-                              circuity_dict, speed_dict, default_speed=65):
+                              circuity_dict, speed_dict):
     """
     Modello bacini polari con tour NN per giornata.
 
@@ -256,7 +263,7 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
 
 
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
-                   freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro, vel_media,
+                   freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
                    max_stops_per_day, use_nearest_neighbor=False):
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
@@ -325,7 +332,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             rep_lon = sub['rep_lon'].iloc[0]
             km_totali, ore_viag = calculate_travel_km_tours(
                 sub, rep_lat, rep_lon, max_stops_per_day,
-                PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED, default_speed=vel_media
+                PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED
             )
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
         else:
@@ -347,11 +354,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     agg['saturazione_pct'] = np.where(max_ore_campo > 0, (agg['ore_totali_annue'] / max_ore_campo) * 100, 0.0)
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
-    def get_alert(s):
-        if s > 110: return "🔴 CRITICO"
-        elif s > 100: return "🟠 OVERLOAD"
-        elif s > 85: return "⚠️ ATTENZIONE"
-        else: return "🟢 OK"
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
     all_reps = pd.DataFrame({'sales_rep': active_list})
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
@@ -441,13 +443,12 @@ def main():
         pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
-        vel_media = st.slider("🚗 Velocità media (km/h)", 40, 100, 65, step=5)
+        # VELOCITÀ RIMOSSA: il sistema usa PROVINCIAL_SPEED per provincia
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
-        # RIMOSSA: matrice ABC da qui (spostata nel main content)
 
     # =============================================================================
     # MAIN CONTENT: Matrice ABC (visibile subito dopo il titolo)
@@ -542,7 +543,7 @@ def main():
                     res, df_w = run_simulation(df_c, df_v, active_list, col_vol, 
                                                abc['da_a'], abc['da_b'], abc['da_c'],
                                                abc['freq_a'], abc['freq_b'], abc['freq_c'],
-                                               dur_visita, ore_effettive_gg, gg_lavoro, vel_media,
+                                               dur_visita, ore_effettive_gg, gg_lavoro,
                                                max_stops_per_day, use_nearest_neighbor=use_nn)
                     if res is None: st.error(df_w)
                     else:
@@ -550,7 +551,7 @@ def main():
                         st.session_state.current_df_work = df_w
                         st.session_state.current_params = {
                             'active_list': active_list, 'ore_gg': ore_effettive_gg,
-                            'gg_lavoro': gg_lavoro, 'vel_media': vel_media, 'dur_visita': dur_visita,
+                            'gg_lavoro': gg_lavoro, 'dur_visita': dur_visita,
                             'max_stops': max_stops_per_day, 'reps': reps, 'use_nn': use_nn,
                             'modo': modo, 'min_vol': min_vol
                         }
@@ -607,11 +608,41 @@ def main():
                 st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
+
+        # Spiegazione metriche
+        with st.expander("ℹ️ Cosa significano le colonne?", expanded=False):
+            st.markdown("""
+            - **Sat %** → Saturazione annua = Ore Totali / (Ore/Giorno × Giorni Lavoro)
+            - **Min/GG** → Minuti medi di guida al giorno = Ore Viaggio Annue × 60 / Giorni Lavoro
+            - **Vis/GG** → Visite medie al giorno = Ore Visite Annue × 60 / Durata Visita / Giorni Lavoro
+            """)
+
         disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c',
                     'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
                     'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
         disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
+
+        # Aggiungi riga TOTALE
+        total_row = pd.DataFrame([{
+            'Venditore': 'TOTALE',
+            'Stato': get_alert(disp['Sat %'].mean()),
+            'Clienti': disp['Clienti'].sum(),
+            'Unici': disp['Unici'].sum(),
+            'A': disp['A'].sum(),
+            'B': disp['B'].sum(),
+            'C': disp['C'].sum(),
+            'Volume': disp['Volume'].sum(),
+            'Ore Visite': disp['Ore Visite'].sum(),
+            'Ore Viaggio': disp['Ore Viaggio'].sum(),
+            'Ore Totali': disp['Ore Totali'].sum(),
+            'Sat %': disp['Sat %'].mean(),
+            'Min/GG': disp['Min/GG'].mean(),
+            'Vis/GG': disp['Vis/GG'].mean(),
+        }])
+        disp = pd.concat([disp, total_row], ignore_index=True)
+
+        # Formattazione
         disp_fmt = disp.copy()
         for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
@@ -619,6 +650,7 @@ def main():
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
         disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
         disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
+
         def color_sat(v):
             if pd.isna(v): return ''
             try:
@@ -629,8 +661,16 @@ def main():
                 elif n > 85: return 'background-color:#fff9c4;color:#f57f17'
                 else: return 'background-color:#c8e6c9;color:#1b5e20'
             except: return ''
+
         styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # Altezza dinamica per mostrare tutto senza scroll interno
+        row_height = 35
+        header_height = 50
+        table_height = (len(disp_fmt) + 1) * row_height + header_height
+
+        st.dataframe(styled, use_container_width=True, hide_index=True, height=table_height)
+
         st.divider()
         st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
@@ -656,13 +696,13 @@ def main():
                         ))
             classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
             for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
-                df_c_map = df_map[df_map['classe'] == classe]
-                if len(df_c_map) > 0:
+                df_cl = df_map[df_map['classe'] == classe]
+                if len(df_cl) > 0:
                     fig.add_trace(go.Scattermapbox(
-                        lat=df_c_map['latitudine'], lon=df_c_map['longitudine'],
+                        lat=df_cl['latitudine'], lon=df_cl['longitudine'],
                         mode='markers', marker=dict(size=size, color=color, opacity=0.8),
                         name=f"Classe {classe}",
-                        text=df_c_map['assigned_rep'].values,
+                        text=df_cl['assigned_rep'].values,
                         hoverinfo='name+text'
                     ))
             df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
