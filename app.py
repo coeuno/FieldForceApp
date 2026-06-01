@@ -629,7 +629,7 @@ def main():
         disp = res[['sales_rep', 'stato', 'n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'n_classe_d',
                     'volume_abc', 'volume_d', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
                     'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
-        disp.columns = ['Venditore', 'Stato', 'Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D',
+        disp.columns = ['Venditore', 'Stato', 'Clienti', 'A', 'B', 'C', 'Volumi A-B-C', 'D', 'Volumi D',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
 
         # Riga TOTALE
@@ -640,8 +640,8 @@ def main():
             'A': disp['A'].sum(),
             'B': disp['B'].sum(),
             'C': disp['C'].sum(),
-            'D': disp['D'].sum(),
             'Volumi A-B-C': disp['Volumi A-B-C'].sum(),
+            'D': disp['D'].sum(),
             'Volumi D': disp['Volumi D'].sum(),
             'Ore Visite': disp['Ore Visite'].sum(),
             'Ore Viaggio': disp['Ore Viaggio'].sum(),
@@ -654,7 +654,7 @@ def main():
 
         # Formattazione valori
         disp_fmt = disp.copy()
-        for col in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
+        for col in ['Clienti', 'A', 'B', 'C', 'Volumi A-B-C', 'D', 'Volumi D']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
         for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
@@ -691,7 +691,7 @@ def main():
                 elif is_total:
                     style = 'background-color:#e8e8e8;color:#000000;font-weight:bold;text-align:center;padding:6px 4px;border-top:3px solid #333;'
                 else:
-                    style = 'text-align:center;padding:6px 4px;'
+                    style = 'color:#000000;text-align:center;padding:6px 4px;'
                 cells.append(f'<td style="{style}">{val}</td>')
 
             if is_total:
@@ -701,14 +701,17 @@ def main():
 
         header_cells = []
         for col in headers:
-            header_cells.append(f'<th style="background-color:#f0f0f0;color:#333;font-weight:bold;text-align:center;padding:8px 4px;border-bottom:2px solid #ccc;">{col}</th>')
+            header_cells.append(f'<th style="background-color:#f0f0f0;color:#000000;font-weight:bold;text-align:center;padding:8px 4px;border-bottom:2px solid #ccc;">{col}</th>')
 
         html_table = (
             '<style>'
-            '.kpi-table { border-collapse: collapse; width: 100%; font-family: "Source Sans Pro", sans-serif; font-size: 14px; }'
+            '.kpi-table { border-collapse: collapse; width: 100%; font-family: "Source Sans Pro", sans-serif; font-size: 14px; color: #000000; }'
             '.kpi-table th { position: sticky; top: 0; z-index: 1; }'
-            '.kpi-table tr:nth-child(even) { background-color: #fafafa; }'
-            '.kpi-table tr:hover { background-color: #f5f5f5; }'
+            '.kpi-table td { color: #000000; }'
+            '.kpi-table tr:nth-child(even) { background-color: #f0f0f0; }'
+            '.kpi-table tr:nth-child(even) td { color: #000000; }'
+            '.kpi-table tr:hover { background-color: #e0e0e0; }'
+            '.kpi-table tr:hover td { color: #000000; }'
             '</style>'
             '<table class="kpi-table">'
             '<thead><tr>' + ''.join(header_cells) + '</tr></thead>'
