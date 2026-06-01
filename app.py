@@ -25,7 +25,6 @@ def fmt_eu(value, decimals=0, suffix='', prefix=''):
 # CONFIGURAZIONE: RETE STRADALE E VELOCITÀ (LIVELLO 1)
 # =============================================================================
 PROVINCIAL_CIRCUITY = {
-    # Pianura / Nord Ovest & Nord Est
     "MI": 1.25, "LO": 1.20, "CR": 1.20, "MN": 1.25, "BS": 1.25, "BG": 1.25, "PV": 1.20,
     "VC": 1.25, "NO": 1.25, "VA": 1.25, "CO": 1.25, "LC": 1.25, "AL": 1.30, "AT": 1.30,
     "BI": 1.25, "VB": 1.40, "TO": 1.30, "CN": 1.30, "RA": 1.25, "FE": 1.25, "PC": 1.25,
@@ -34,13 +33,11 @@ PROVINCIAL_CIRCUITY = {
     "AQ": 1.50, "CE": 1.35, "BN": 1.38, "NA": 1.32, "AV": 1.42, "SA": 1.38, "PZ": 1.48,
     "MT": 1.45, "BA": 1.28, "BR": 1.28, "TA": 1.32, "FG": 1.32, "BT": 1.32, "CB": 1.42,
     "IS": 1.42, "VT": 1.38, "LT": 1.32, "FR": 1.32, "RM": 1.32, "RI": 1.38,
-    # Centro & Liguria
     "GE": 1.42, "SV": 1.38, "IM": 1.38, "SP": 1.38, "LU": 1.32, "PI": 1.28, "PT": 1.30,
     "PO": 1.28, "LI": 1.28, "AR": 1.32, "SI": 1.32, "FI": 1.28, "GR": 1.42, "PG": 1.38,
     "TR": 1.32, "MS": 1.35, "UD": 1.32, "GO": 1.30, "TS": 1.28, "PN": 1.32, "VR": 1.25,
     "VI": 1.25, "TV": 1.25, "VE": 1.28, "PD": 1.25, "RO": 1.25, "BL": 1.42, "TN": 1.45,
     "BZ": 1.48, "SO": 1.45, "AO": 1.38,
-    # Isole & Sud
     "CA": 1.32, "SS": 1.38, "NU": 1.42, "OR": 1.38, "OT": 1.42, "SU": 1.42,
     "RG": 1.42, "SR": 1.38, "CT": 1.32, "ME": 1.38, "PA": 1.38, "TP": 1.42,
     "AG": 1.42, "CL": 1.42, "EN": 1.45, "CS": 1.42, "CZ": 1.42, "VV": 1.48,
@@ -48,10 +45,8 @@ PROVINCIAL_CIRCUITY = {
 }
 
 PROVINCIAL_SPEED = {
-    # Grandi città / Traffico
     "MI": 38, "RM": 35, "NA": 32, "TO": 40, "GE": 35, "BO": 38, "FI": 36,
     "VE": 35, "BA": 38, "CT": 34, "PA": 36,
-    # Pianura / Alta scorrevolezza
     "LO": 62, "CR": 65, "MN": 60, "PV": 60, "PC": 62, "PR": 62, "RE": 62,
     "MO": 58, "RN": 60, "FE": 60, "RA": 58, "FC": 50, "VR": 60, "VI": 60,
     "PD": 60, "RO": 60, "TV": 60, "BG": 55, "BS": 58, "CO": 50, "VA": 48,
@@ -60,12 +55,10 @@ PROVINCIAL_SPEED = {
     "GR": 48, "LT": 50, "FR": 52, "VT": 50, "RI": 50, "CB": 48, "IS": 48,
     "CE": 45, "BN": 45, "AV": 45, "SA": 48, "PZ": 48, "MT": 48, "FG": 55,
     "BT": 55, "BR": 58, "TA": 55, "LE": 58, "KR": 52,
-    # Collina / Appennino / Liguria
     "SV": 48, "IM": 45, "SP": 45, "MS": 50, "PG": 50, "TR": 50, "AN": 52,
     "MC": 50, "AP": 48, "FM": 50, "PE": 48, "CH": 45, "TE": 45, "AQ": 42,
     "CS": 45, "CZ": 45, "VV": 42, "RC": 42, "RG": 48, "SR": 48, "EN": 45,
     "CL": 45, "AG": 48, "TP": 48, "ME": 45,
-    # Montagna
     "AO": 42, "BL": 45, "BZ": 42, "TN": 42, "SO": 42, "UD": 48, "GO": 48,
     "PN": 48, "VB": 45
 }
@@ -109,7 +102,6 @@ def calculate_travel_metrics(df_customers, rep_home_lat, rep_home_lon, circuity_
     total_visits = custs['freq_visite'].sum()
     if total_visits == 0: return 0.0, 0.0
 
-    # Vettorizzazione per prestazioni
     custs['circuity'] = custs['sigla'].map(circuity_dict).fillna(1.35)
     custs['road_dist'] = air_dists * custs['circuity']
     avg_road_dist = (custs['road_dist'] * custs['freq_visite']).sum() / total_visits
@@ -117,9 +109,7 @@ def calculate_travel_metrics(df_customers, rep_home_lat, rep_home_lon, circuity_
     custs['speed'] = custs['sigla'].map(speed_dict).fillna(50)
     weighted_speed = (custs['speed'] * custs['freq_visite']).sum() / total_visits
 
-    # 1.35 sostituisce il vecchio *2.0 * dispersione / efficienza
-    # Simula realisticamente un giro giornaliero multi-cliente
-    routing_factor = 1.35
+    routing_factor = 1.35  # Simula tour multi-stop giornaliero
     km_annui = total_visits * avg_road_dist * routing_factor
     ore_viaggio = km_annui / weighted_speed if weighted_speed > 0 else 0
     
@@ -214,7 +204,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_w
 
 # =============================================================================
-# INTERFACCIA (Struttura identica all'originale)
+# INTERFACCIA
 # =============================================================================
 def main():
     st.markdown("""
@@ -261,8 +251,9 @@ def main():
             st.error(f"❌ Errore lettura file: {e}")
             return
 
-        df_c.columns = [c.strip().lower() for c in df_c.columns]
-        df_v.columns = [c.strip().lower() for c in df_v.columns]
+        # FIX CRITICO: str(c) evita AttributeError se Excel ha colonne numeriche
+        df_c.columns = [str(c).strip().lower() for c in df_c.columns]
+        df_v.columns = [str(c).strip().lower() for c in df_v.columns]
         for col in ['latitudine', 'longitudine', 'sigla']:
             if col not in df_c.columns:
                 st.error(f"❌ Clienti: manca colonna '{col}'")
