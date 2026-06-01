@@ -32,9 +32,8 @@ def get_alert(s):
     else: return "🟢 OK"
 
 # =============================================================================
-# CONFIGURAZIONE (3 ELEMENTI RICHIESTI)
+# CONFIGURAZIONE
 # =============================================================================
-# 1. CIRCUITY FACTOR
 PROVINCIAL_CIRCUITY = {
     "MI": 1.25, "LO": 1.20, "CR": 1.20, "MN": 1.25, "BS": 1.25, "BG": 1.25, "PV": 1.20,
     "VC": 1.25, "NO": 1.25, "AL": 1.35, "AT": 1.30, "BI": 1.25, "VB": 1.45, "TO": 1.30,
@@ -54,7 +53,6 @@ PROVINCIAL_CIRCUITY = {
     "VA": 1.25, "CO": 1.25, "LC": 1.25
 }
 
-# 2. VELOCITÀ MEDIA PROVINCIALI
 PROVINCIAL_SPEED = {
     "MI": 38, "RM": 35, "NA": 32, "TO": 40, "GE": 35, "BO": 38, "FI": 36, "VE": 35,
     "BA": 38, "CT": 34, "PA": 36, "LO": 62, "CR": 65, "MN": 60, "PV": 60, "PC": 62,
@@ -89,7 +87,7 @@ def classify_abc(df, volume_col, da_a, da_b, da_c):
         (df[volume_col] >= da_c) & (df[volume_col] < da_b),
         df[volume_col] < da_c
     ]
-    df['classe'] = np.select(conditions, ['A', 'B', 'C', 'Non Attivo'], default='Non Attivo')
+    df['classe'] = np.select(conditions, ['A', 'B', 'C', 'D'], default='D')
     return df
 
 def compute_hull_coords(df_customers):
@@ -155,15 +153,6 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
                               circuity_dict, speed_dict):
     """
     Modello bacini polari con tour NN per giornata.
-
-    Logica:
-    1. Divide i clienti in settori angolari (bacini) attorno alla sede del venditore.
-       Il numero di settori è dinamico in base ai clienti assegnati.
-    2. Espande le visite (cliente × frequenza annua).
-    3. Distribuisce le visite in giornate, privilegiando il bacino più "carico".
-    4. Se una giornata non si riempie, prende dai bacini adiacenti.
-    5. Ogni giornata esegue un tour NN (Nearest Neighbor) sui clienti selezionati.
-    6. Somma i km e le ore di viaggio di tutte le giornate.
     """
     if len(df_customers) == 0:
         return 0.0, 0.0
@@ -173,11 +162,9 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     if total_visits == 0:
         return 0.0, 0.0
 
-    # Numero dinamico di settori angolari (bacini)
     n_customers = len(df)
     n_sectors = min(12, max(4, int(np.ceil(np.sqrt(n_customers)))))
 
-    # 1. Calcola angoli (bearing da Nord) e assegna settori
     dx = np.radians(df['longitudine'].values - rep_home_lon)
     dy = np.radians(df['latitudine'].values - rep_home_lat)
     angles = np.degrees(np.arctan2(dx, dy))
@@ -185,7 +172,6 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     df['angle'] = angles
     df['sector'] = (angles / (360 / n_sectors)).astype(int) % n_sectors
 
-    # 2. Espandi visite: ogni cliente genera N righe = freq_visite
     visits = []
     for idx, row in df.iterrows():
         freq = int(row['freq_visite']) if pd.notna(row['freq_visite']) else 0
@@ -207,11 +193,9 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     n_visits = len(visits_df)
     visit_mask = np.zeros(n_visits, dtype=bool)
 
-    # 3. Distribuisci visite in giornate
     giornate = []
 
     while not visit_mask.all():
-        # Conta visite residue per settore
         residue = {}
         for s in range(n_sectors):
             residue[s] = ((visits_df['sector'] == s) & (~visit_mask)).sum()
@@ -220,14 +204,12 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
         if residue[best_sector] == 0:
             break
 
-        # Prendi dal bacino principale (i più vicini prima)
         avail_best = visits_df.loc[~visit_mask & (visits_df['sector'] == best_sector)]
         avail_best = avail_best.sort_values('dist')
         take_best = avail_best.head(max_stops_per_day)
         taken_indices = take_best.index.tolist()
         visit_mask[taken_indices] = True
 
-        # Se non pieno, prendi dai bacini adiacenti
         remaining_slots = max_stops_per_day - len(taken_indices)
         if remaining_slots > 0:
             for adj in [(best_sector - 1) % n_sectors, (best_sector + 1) % n_sectors]:
@@ -242,7 +224,6 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
                     visit_mask[adj_indices] = True
                     remaining_slots -= len(adj_indices)
 
-        # Tour NN per questa giornata
         if len(taken_indices) > 0:
             giornata_df = visits_df.loc[taken_indices]
             km_giorno, ore_giorno = _nn_tour_giornata(
@@ -276,11 +257,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
-    df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
-    df_w = df_w[df_w['classe'] != 'Non Attivo'].copy()
-    if len(df_w) == 0:
-        return None, "Nessun cliente attivo sopra la soglia minima C."
 
+    # Assegnazione venditori (su tutto il df, prima della classificazione)
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
@@ -311,22 +289,54 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         )
         df_w['assegnazione'] = 'attuale'
 
-    df_w['rep_lat'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
-    df_w['rep_lon'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
+    # Classificazione ABC su tutti i clienti assegnati
+    df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
 
-    # Aggiunge provincia del venditore (utile per circuity del ritorno a casa)
-    if 'sigla' in df_v_valid.columns:
-        df_w['rep_sigla'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['sigla'])
-    else:
-        df_w['rep_sigla'] = None
-
-    freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
-    df_w['freq_visite'] = df_w['classe'].map(freq_map)
-    df_w['ore_visita_annue'] = (df_w['freq_visite'] * dur_visita) / 60.0
-
-    travel_data = []
+    # Aggregati completi per venditore (inclusi D)
+    agg_list = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
+        if len(sub) > 0:
+            agg_list.append({
+                'sales_rep': rep,
+                'n_clienti': int(len(sub)),
+                'n_clienti_uniq': int(sub['sold to id'].nunique()),
+                'n_classe_a': int((sub['classe'] == 'A').sum()),
+                'n_classe_b': int((sub['classe'] == 'B').sum()),
+                'n_classe_c': int((sub['classe'] == 'C').sum()),
+                'n_classe_d': int((sub['classe'] == 'D').sum()),
+                'volume_abc': float(sub.loc[sub['classe'].isin(['A','B','C']), col_vol].sum()),
+                'volume_d': float(sub.loc[sub['classe'] == 'D', col_vol].sum()),
+            })
+        else:
+            agg_list.append({
+                'sales_rep': rep, 'n_clienti': 0, 'n_clienti_uniq': 0,
+                'n_classe_a': 0, 'n_classe_b': 0, 'n_classe_c': 0, 'n_classe_d': 0,
+                'volume_abc': 0.0, 'volume_d': 0.0
+            })
+    agg = pd.DataFrame(agg_list)
+
+    # Filtra clienti attivi (A,B,C) per la logica visite e km
+    df_work = df_w[df_w['classe'] != 'D'].copy()
+    if len(df_work) == 0:
+        return None, "Nessun cliente attivo sopra la soglia minima C."
+
+    # Coordinate venditore su df_work
+    df_work['rep_lat'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
+    df_work['rep_lon'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
+    if 'sigla' in df_v_valid.columns:
+        df_work['rep_sigla'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['sigla'])
+    else:
+        df_work['rep_sigla'] = None
+
+    freq_map = {'A': freq_a, 'B': freq_b, 'C': freq_c}
+    df_work['freq_visite'] = df_work['classe'].map(freq_map)
+    df_work['ore_visita_annue'] = (df_work['freq_visite'] * dur_visita) / 60.0
+
+    # Calcolo km e ore viaggio
+    travel_data = []
+    for rep in active_list:
+        sub = df_work[df_work['assigned_rep'] == rep]
         if len(sub) > 0:
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
@@ -339,26 +349,25 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0, 'km_annui': 0.0})
 
     travel_df = pd.DataFrame(travel_data)
-    agg = df_w.groupby('assigned_rep').agg(
-        n_clienti=('assigned_rep', 'count'),
-        n_clienti_uniq=('sold to id', 'nunique'),
-        n_classe_a=('classe', lambda x: (x == 'A').sum()),
-        n_classe_b=('classe', lambda x: (x == 'B').sum()),
-        n_classe_c=('classe', lambda x: (x == 'C').sum()),
-        volume_totale=(col_vol, 'sum'),
+    agg = agg.merge(travel_df, on='sales_rep', how='left').fillna(0)
+
+    # Ore visite aggregate
+    visite_agg = df_work.groupby('assigned_rep').agg(
         ore_visite_annue=('ore_visita_annue', 'sum')
     ).reset_index().rename(columns={'assigned_rep': 'sales_rep'})
-    agg = agg.merge(travel_df, on='sales_rep', how='left').fillna(0)
+    agg = agg.merge(visite_agg, on='sales_rep', how='left').fillna(0)
+
     max_ore_campo = ore_gg * gg_lavoro
     agg['ore_totali_annue'] = agg['ore_visite_annue'] + agg['ore_viaggio_annue']
     agg['saturazione_pct'] = np.where(max_ore_campo > 0, (agg['ore_totali_annue'] / max_ore_campo) * 100, 0.0)
     agg['driving_min_giorno'] = (agg['ore_viaggio_annue'] * 60) / gg_lavoro
     agg['visite_giorno'] = (agg['ore_visite_annue'] * 60 / dur_visita) / gg_lavoro
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
+
     all_reps = pd.DataFrame({'sales_rep': active_list})
     result = all_reps.merge(agg, on='sales_rep', how='left').fillna(0)
     result = result.sort_values('saturazione_pct', ascending=False)
-    return result, df_w
+    return result, df_work
 
 # =============================================================================
 # INTERFACCIA
@@ -382,7 +391,7 @@ def main():
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
 
     # =============================================================================
-    # SIDEBAR: solo upload e parametri operativi
+    # SIDEBAR
     # =============================================================================
     with st.sidebar:
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
@@ -443,7 +452,6 @@ def main():
         pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
-        # VELOCITÀ RIMOSSA: il sistema usa PROVINCIAL_SPEED per provincia
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
@@ -451,10 +459,9 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
     # =============================================================================
-    # MAIN CONTENT: Matrice ABC (visibile subito dopo il titolo)
+    # MAIN CONTENT: Matrice ABC
     # =============================================================================
     if uploaded:
-        # Salva df_c e col_vol in session state per accessibilità
         st.session_state.df_c = df_c
         st.session_state.col_vol = col_vol
 
@@ -487,7 +494,7 @@ def main():
             a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, step=1, help="-1 = infinito")
             freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
         with col4:
-            st.markdown("**🔵 Non Attivi**")
+            st.markdown("**⚫ Classe D**")
             da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
             a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
             freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
@@ -509,10 +516,9 @@ def main():
             with col_prev1: st.metric("🟢 Classe A", f"{fmt_eu(dist.get('A', 0))}")
             with col_prev2: st.metric("🟡 Classe B", f"{fmt_eu(dist.get('B', 0))}")
             with col_prev3: st.metric("🔴 Classe C", f"{fmt_eu(dist.get('C', 0))}")
-            with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
+            with col_prev4: st.metric("⚫ Classe D", f"{fmt_eu(dist.get('D', 0))}")
         except: pass
 
-        # Pulsante per applicare/aggiornare la matrice
         if st.button("🔄 Aggiorna Classificazione", use_container_width=True):
             st.session_state.abc_updated = True
             st.rerun()
@@ -538,7 +544,6 @@ def main():
                 if len(active_list) == 0:
                     st.error("⚠️ Seleziona almeno un venditore")
                 else:
-                    # Recupera valori matrice aggiornati
                     abc = st.session_state.abc_vals
                     res, df_w = run_simulation(df_c, df_v, active_list, col_vol, 
                                                abc['da_a'], abc['da_b'], abc['da_c'],
@@ -609,7 +614,6 @@ def main():
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
 
-        # Spiegazione metriche
         with st.expander("ℹ️ Cosa significano le colonne?", expanded=False):
             st.markdown("""
             - **Sat %** → Saturazione annua = Ore Totali / (Ore/Giorno × Giorni Lavoro)
@@ -617,22 +621,23 @@ def main():
             - **Vis/GG** → Visite medie al giorno = Ore Visite Annue × 60 / Durata Visita / Giorni Lavoro
             """)
 
-        disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c',
-                    'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
+        disp = res[['sales_rep', 'stato', 'n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'n_classe_d',
+                    'volume_abc', 'volume_d', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
                     'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
-        disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume',
+        disp.columns = ['Venditore', 'Stato', 'Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
 
-        # Aggiungi riga TOTALE
+        # Riga TOTALE
         total_row = pd.DataFrame([{
             'Venditore': 'TOTALE',
             'Stato': get_alert(disp['Sat %'].mean()),
             'Clienti': disp['Clienti'].sum(),
-            'Unici': disp['Unici'].sum(),
             'A': disp['A'].sum(),
             'B': disp['B'].sum(),
             'C': disp['C'].sum(),
-            'Volume': disp['Volume'].sum(),
+            'D': disp['D'].sum(),
+            'Volumi A-B-C': disp['Volumi A-B-C'].sum(),
+            'Volumi D': disp['Volumi D'].sum(),
             'Ore Visite': disp['Ore Visite'].sum(),
             'Ore Viaggio': disp['Ore Viaggio'].sum(),
             'Ore Totali': disp['Ore Totali'].sum(),
@@ -644,7 +649,7 @@ def main():
 
         # Formattazione
         disp_fmt = disp.copy()
-        for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']:
+        for col in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
         for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
@@ -662,14 +667,33 @@ def main():
                 else: return 'background-color:#c8e6c9;color:#1b5e20'
             except: return ''
 
-        styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
+        def style_totale(row):
+            if row.name == len(disp_fmt) - 1:
+                return ['font-weight: bold; background-color: #e8e8e8; border-top: 2px solid #333333;'] * len(row)
+            return [''] * len(row)
+
+        styled = (disp_fmt.style
+                  .apply(style_totale, axis=1)
+                  .map(color_sat, subset=['Sat %'])
+                  .set_properties(**{'text-align': 'center'}))
 
         # Altezza dinamica per mostrare tutto senza scroll interno
         row_height = 35
         header_height = 50
         table_height = (len(disp_fmt) + 1) * row_height + header_height
 
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=table_height)
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            hide_index=True,
+            height=table_height,
+            column_config={
+                "A": st.column_config.NumberColumn("A", width="small"),
+                "B": st.column_config.NumberColumn("B", width="small"),
+                "C": st.column_config.NumberColumn("C", width="small"),
+                "D": st.column_config.NumberColumn("D", width="small"),
+            }
+        )
 
         st.divider()
         st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
