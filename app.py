@@ -306,33 +306,51 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
     # =============================================================================
-    # MATRICE ABC STABILE (4 COLONNE - INPUT DIRETTI)
+    # MATRICE ABC COMPLETA (CON MIN E MAX)
     # =============================================================================
     st.subheader("📊 Matrice Classificazione ABC & Frequenze")
-    st.caption("Modifica soglie e visite. I campi sono indipendenti e si aggiornano in tempo reale.")
+    st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
 
     if 'abc_vals' not in st.session_state:
-        st.session_state.abc_vals = {'da_a': 801, 'freq_a': 24, 'da_b': 301, 'freq_b': 12, 'da_c': 10, 'freq_c': 3, 'da_na': 0, 'freq_na': 0}
+        st.session_state.abc_vals = {
+            'da_a': 801, 'a_a': -1, 'freq_a': 24,
+            'da_b': 301, 'a_b': 800, 'freq_b': 12,
+            'da_c': 10, 'a_c': 300, 'freq_c': 3,
+            'da_na': 0, 'a_na': 9, 'freq_na': 0
+        }
 
     col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
         st.markdown("**🟢 Classe A**")
-        da_a = st.number_input("Soglia minima (da ≥)", key="da_a", value=st.session_state.abc_vals['da_a'], min_value=0, step=1)
-        freq_a = st.number_input("Visite/anno", key="freq_a", value=st.session_state.abc_vals['freq_a'], min_value=0, step=1)
+        da_a = st.number_input("da ≥", key="da_a_input", value=st.session_state.abc_vals['da_a'], min_value=0, step=1)
+        a_a = st.number_input("a <", key="a_a_input", value=st.session_state.abc_vals['a_a'], min_value=-1, step=1, help="-1 = infinito")
+        freq_a = st.number_input("Visite/anno", key="freq_a_input", value=st.session_state.abc_vals['freq_a'], min_value=0, step=1)
+    
     with col2:
         st.markdown("**🟡 Classe B**")
-        da_b = st.number_input("Soglia minima (da ≥)", key="da_b", value=st.session_state.abc_vals['da_b'], min_value=0, step=1)
-        freq_b = st.number_input("Visite/anno", key="freq_b", value=st.session_state.abc_vals['freq_b'], min_value=0, step=1)
+        da_b = st.number_input("da ≥", key="da_b_input", value=st.session_state.abc_vals['da_b'], min_value=0, step=1)
+        a_b = st.number_input("a <", key="a_b_input", value=st.session_state.abc_vals['a_b'], min_value=-1, step=1, help="-1 = infinito")
+        freq_b = st.number_input("Visite/anno", key="freq_b_input", value=st.session_state.abc_vals['freq_b'], min_value=0, step=1)
+    
     with col3:
         st.markdown("**🔴 Classe C**")
-        da_c = st.number_input("Soglia minima (da ≥)", key="da_c", value=st.session_state.abc_vals['da_c'], min_value=0, step=1)
-        freq_c = st.number_input("Visite/anno", key="freq_c", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
+        da_c = st.number_input("da ≥", key="da_c_input", value=st.session_state.abc_vals['da_c'], min_value=0, step=1)
+        a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, step=1, help="-1 = infinito")
+        freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
+    
     with col4:
         st.markdown("**🔵 Non Attivi**")
-        da_na = st.number_input("Soglia minima (da ≥)", key="da_na", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
-        freq_na = st.number_input("Visite/anno", key="freq_na", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
+        da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
+        a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
+        freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
 
-    st.session_state.abc_vals = {'da_a': da_a, 'freq_a': freq_a, 'da_b': da_b, 'freq_b': freq_b, 'da_c': da_c, 'freq_c': freq_c, 'da_na': da_na, 'freq_na': freq_na}
+    st.session_state.abc_vals = {
+        'da_a': da_a, 'a_a': a_a, 'freq_a': freq_a,
+        'da_b': da_b, 'a_b': a_b, 'freq_b': freq_b,
+        'da_c': da_c, 'a_c': a_c, 'freq_c': freq_c,
+        'da_na': da_na, 'a_na': a_na, 'freq_na': freq_na
+    }
     min_vol = da_c
 
     # Preview distribuzione
@@ -500,7 +518,7 @@ def main():
                             mode='lines', lon=lon_h, lat=lat_h,
                             line=dict(width=1.5, color=rep_colors[rep]),
                             fill='toself', fillcolor=rep_colors[rep],
-                            opacity=0.25,  # ️ Trasparente per vedere la mappa sotto
+                            opacity=0.25,
                             name=f"Zona {rep}",
                             hoverinfo='name'
                         ))
