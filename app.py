@@ -162,6 +162,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     if len(df_w) == 0:
         return None, "Nessun cliente attivo sopra la soglia minima C."
 
+    # RIMOSSA riga df_w['tortuosity'] = ... (sostituita dalla logica nel nuovo calcolo tour)
+
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
         v_lats, v_lons = df_v_valid['latitudine'].values, df_v_valid['longitudine'].values
@@ -241,7 +243,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_w
 
 # =============================================================================
-# INTERFACCIA (INVARITATA, SOLO FIX PER AVVIO AFFIDABILE)
+# INTERFACCIA (INVARITATA RISPETTO A Codice_buono.txt)
 # =============================================================================
 def main():
     st.markdown("""
@@ -273,10 +275,10 @@ def main():
         file_signature = f"{uploaded.name}_{uploaded.size}"
         if file_signature != st.session_state.get('last_upload_signature', ''):
             st.session_state.last_upload_signature = file_signature
+            st.session_state.trigger_auto_run = True
             st.session_state.scenarios = {}
             st.session_state.current_result = None
             st.session_state.current_df_work = None
-            st.session_state.auto_run_pending = True
         try:
             df_c = pd.read_excel(uploaded, sheet_name="clienti_geocodificati")
             df_v = pd.read_excel(uploaded, sheet_name="venditori")
@@ -318,7 +320,7 @@ def main():
         pausa_pranzo = st.slider("️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
-        vel_media = st.slider(" Velocità media (km/h) [Fallback]", 40, 100, 65, step=5)
+        vel_media = st.slider(" Velocità media (km/h)", 40, 100, 65, step=5)
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
@@ -377,14 +379,11 @@ def main():
         if 'current_result' not in st.session_state: st.session_state.current_result = None
         if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
         if 'current_params' not in st.session_state: st.session_state.current_params = {}
-        
-        # FIX AVVIO AFFIDABILE
         run_sim = False
-        if st.session_state.get('auto_run_pending', False) and st.session_state.current_result is None:
-            st.session_state.auto_run_pending = False
+        if st.session_state.get('trigger_auto_run', False):
+            st.session_state.trigger_auto_run = False
             run_sim = True
         if manual_run: run_sim = True
-
         if run_sim:
             with st.spinner("🔄 Calcolo scenario Density-Aware in corso..."):
                 try:
@@ -408,8 +407,7 @@ def main():
                             st.session_state.current_df_v = df_v
                             st.success("✅ Calcolo completato!")
                 except Exception as e:
-                    st.error(f"❌ Errore critico: {e}")
-        
+                    st.error(f"❌ Errore: {e}")
         if st.session_state.current_result is not None:
             res = st.session_state.current_result
             df_w = st.session_state.current_df_work
@@ -506,21 +504,24 @@ def main():
                 for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
                     df_c = df_map[df_map['classe'] == classe]
                     if len(df_c) > 0:
+                        # FIX STREAMLIT CLOUD: hoverdata non è supportato in Scattermapbox
                         fig.add_trace(go.Scattermapbox(
                             lat=df_c['latitudine'], lon=df_c['longitudine'],
                             mode='markers', marker=dict(size=size, color=color, opacity=0.8),
                             name=f"Classe {classe}",
-                            hoverdata={'assigned_rep': True}
+                            text=df_c['assigned_rep'].values,
+                            hoverinfo='name+text'
                         ))
                 df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
                     subset=['latitudine', 'longitudine']
                 )
                 if len(df_v_active) > 0:
+                    # FIX STREAMLIT CLOUD: symbol e line dentro marker causano ValueError
                     fig.add_trace(go.Scattermapbox(
                         lat=df_v_active['latitudine'],
                         lon=df_v_active['longitudine'],
                         mode='markers',
-                        marker=dict(size=14, symbol='star', color='black', line=dict(width=2, color='white')),
+                        marker=dict(size=14, color='black', opacity=0.9),
                         name=' Home Base',
                         hoverinfo='name'
                     ))
@@ -549,7 +550,7 @@ def main():
             csv = export_df.to_csv(index=False, sep=';', decimal=',')
             st.download_button(" Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
         else:
-            st.info("⏳ Simulazione non ancora avviata. Clicca '🚀 LANCIA SIMULAZIONE' o attendi il calcolo automatico dopo il caricamento.")
+            st.info(" Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
 
 if __name__ == "__main__":
     main()
