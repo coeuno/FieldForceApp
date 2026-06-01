@@ -25,7 +25,7 @@ def fmt_eu(value, decimals=0, suffix='', prefix=''):
         return str(value)
 
 # =============================================================================
-# CONFIGURAZIONE (3 ELEMENTI RICHIESTI DAL DEBRIEF)
+# CONFIGURAZIONE (3 ELEMENTI RICHIESTI)
 # =============================================================================
 # 1. CIRCUITY FACTOR
 PROVINCIAL_CIRCUITY = {
@@ -96,7 +96,7 @@ def compute_hull_coords(df_customers):
     except:
         return None, None
 
-# 3. TOUR MULTI-CLIENTE (Sostituisce calculate_travel_km_aggregated)
+# 3. TOUR MULTI-CLIENTE (Implementazione richiesta)
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day, circuity_dict, speed_dict, default_speed=65):
     if len(df_customers) == 0:
         return 0.0, 0.0
@@ -110,18 +110,18 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     df['air_dist'] = haversine_km(df['longitudine'].values, df['latitudine'].values, rep_home_lon, rep_home_lat)
     df['road_dist'] = df['air_dist'] * df['sigla'].map(circuity_dict).fillna(1.35)
 
-    # Sweep Algorithm: ordinamento angolare per simulare il giro reale
+    # Sweep Algorithm: ordinamento angolare
     dx = np.radians(df['longitudine'].values - rep_home_lon)
     dy = np.radians(df['latitudine'].values - rep_home_lat)
     df['angle'] = np.arctan2(dy, dx)
     df = df.sort_values('angle')
 
-    # Calcolo del tour giornaliero tipo (sui clienti unici del cluster)
+    # Clienti unici per il tour giornaliero
     unique_custs = df[['latitudine', 'longitudine', 'sigla']].drop_duplicates()
     if len(unique_custs) == 0:
         return 0.0, 0.0
 
-    # Percorso: Sede -> Clienti ordinati -> Sede
+    # Percorso: Sede -> Clienti -> Sede
     tour_lats = [rep_home_lat] + unique_custs['latitudine'].tolist() + [rep_home_lat]
     tour_lons = [rep_home_lon] + unique_custs['longitudine'].tolist() + [rep_home_lon]
     tour_siglas = [''] + unique_custs['sigla'].tolist() + ['']
@@ -133,11 +133,10 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
         circ = circuity_dict.get(sigla_dest, 1.35)
         daily_km += air * circ
 
-    # Stima giorni necessari per coprire le visite annue
     n_giornate = np.ceil(total_visits / max_stops_per_day)
     annual_km = daily_km * n_giornate
 
-    # Tempo di viaggio: velocità media ponderata per provincia
+    # Velocità media ponderata
     avg_speed = df['sigla'].map(speed_dict).fillna(default_speed).mean()
     annual_ore_viaggio = annual_km / avg_speed if avg_speed > 0 else 0.0
 
@@ -161,8 +160,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w = df_w[df_w['classe'] != 'Non Attivo'].copy()
     if len(df_w) == 0:
         return None, "Nessun cliente attivo sopra la soglia minima C."
-
-    # RIMOSSA riga df_w['tortuosity'] = ... (sostituita dalla logica nel nuovo calcolo tour)
 
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
@@ -243,7 +240,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_w
 
 # =============================================================================
-# INTERFACCIA (INVARITATA RISPETTO A Codice_buono.txt)
+# INTERFACCIA
 # =============================================================================
 def main():
     st.markdown("""
@@ -260,8 +257,9 @@ def main():
     .stNumberInput > div > div > input { text-align: center !important; }
     </style>
     """, unsafe_allow_html=True)
-    st.title("🎯 Field Force Downsizing Simulator")
+    st.title(" Field Force Downsizing Simulator")
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
+    
     with st.sidebar:
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
@@ -304,7 +302,7 @@ def main():
             return
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
         clienti_con_rep = df_c['sales rep'].notna().sum()
-        st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
+        st.caption(f" {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
         st.subheader("🎮 Modalità")
         modo = st.radio("Scegli modalità:",
@@ -314,7 +312,7 @@ def main():
         st.subheader("⚙️ Parametri Simulazione")
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
-        dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
+        dur_visita = st.slider("️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input(" Giorni lavorativi/anno", 180, 260, 220, step=5)
         pausa_pranzo = st.slider("️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
@@ -326,7 +324,7 @@ def main():
         reps = sorted(df_v['sales rep'].unique())
         with st.expander("Attiva / Disattiva venditori", expanded=True):
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
-        st.subheader("📊 Matrice Classificazione ABC & Frequenze")
+        st.subheader(" Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
         if 'abc_vals' not in st.session_state:
             st.session_state.abc_vals = {
@@ -370,9 +368,9 @@ def main():
                 df_preview = classify_abc(df_preview, col_vol, da_a, da_b, da_c)
                 dist = df_preview['classe'].value_counts()
                 col_prev1, col_prev2, col_prev3, col_prev4 = st.columns(4)
-                with col_prev1: st.metric("🟢 Classe A", f"{fmt_eu(dist.get('A', 0))}")
+                with col_prev1: st.metric(" Classe A", f"{fmt_eu(dist.get('A', 0))}")
                 with col_prev2: st.metric("🟡 Classe B", f"{fmt_eu(dist.get('B', 0))}")
-                with col_prev3: st.metric("🔴 Classe C", f"{fmt_eu(dist.get('C', 0))}")
+                with col_prev3: st.metric(" Classe C", f"{fmt_eu(dist.get('C', 0))}")
                 with col_prev4: st.metric("🔵 Non Attivi", f"{fmt_eu(dist.get('Non Attivo', 0))}")
             except: pass
         if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
@@ -407,150 +405,158 @@ def main():
                             st.session_state.current_df_v = df_v
                             st.success("✅ Calcolo completato!")
                 except Exception as e:
-                    st.error(f"❌ Errore: {e}")
-        if st.session_state.current_result is not None:
-            res = st.session_state.current_result
-            df_w = st.session_state.current_df_work
-            params = st.session_state.current_params
-            df_v_curr = st.session_state.get('current_df_v', df_v)
+                    st.error(f"❌ Errore critico durante la simulazione: {e}")
+        
+        # Se la simulazione non è ancora stata fatta o è fallita
+        if st.session_state.current_result is None and run_sim:
+             st.warning("⚠️ La simulazione non è riuscita. Controlla i parametri o ricarica il file.")
+
+    # =============================================================================
+    # VISUALIZZAZIONE RISULTATI (Solo se la simulazione è andata a buon fine)
+    # =============================================================================
+    if st.session_state.current_result is not None:
+        res = st.session_state.current_result
+        df_w = st.session_state.current_df_work
+        params = st.session_state.current_params
+        df_v_curr = st.session_state.get('current_df_v', df_v)
+        st.divider()
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']))}</div></div>", unsafe_allow_html=True)
+        with col2:
+            total_customers = int(res['n_clienti'].sum())
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers)}</div></div>", unsafe_allow_html=True)
+        with col3:
+            avg_sat = res['saturazione_pct'].mean()
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", unsafe_allow_html=True)
+        with col4:
+            overload = len(res[res['saturazione_pct'] > 100])
+            st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
+        st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c))}**")
+        col_btn, col_name = st.columns([2, 1])
+        with col_btn:
+            if st.button(" Salva come Baseline", use_container_width=True):
+                st.session_state.scenarios["📍 BASELINE"] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
+                st.success("✅ Baseline salvata!")
+        with col_name:
+            nome_scen = st.text_input("Nome scenario", placeholder="Es. 19 Agenti")
+            if st.button("💾 Salva", use_container_width=True) and nome_scen:
+                st.session_state.scenarios[nome_scen] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
+                st.success(f"✅ '{nome_scen}' salvato!")
+        if len(st.session_state.scenarios) >= 2:
             st.divider()
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Attivi</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(len(params['active_list']))}</div></div>", unsafe_allow_html=True)
-            with col2:
-                total_customers = int(res['n_clienti'].sum())
-                st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Clienti Serviti</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(total_customers)}</div></div>", unsafe_allow_html=True)
-            with col3:
-                avg_sat = res['saturazione_pct'].mean()
-                st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Saturazione Media</div><div style='font-size: 36px; font-weight: bold;'>{avg_sat:.1f}%</div></div>", unsafe_allow_html=True)
-            with col4:
-                overload = len(res[res['saturazione_pct'] > 100])
-                st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
-            st.info(f"📍 Modalità: **{params['modo']}** | Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(params.get('min_vol', da_c))}**")
-            col_btn, col_name = st.columns([2, 1])
-            with col_btn:
-                if st.button("💾 Salva come Baseline", use_container_width=True):
-                    st.session_state.scenarios["📍 BASELINE"] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
-                    st.success("✅ Baseline salvata!")
-            with col_name:
-                nome_scen = st.text_input("Nome scenario", placeholder="Es. 19 Agenti")
-                if st.button("💾 Salva", use_container_width=True) and nome_scen:
-                    st.session_state.scenarios[nome_scen] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
-                    st.success(f"✅ '{nome_scen}' salvato!")
-            if len(st.session_state.scenarios) >= 2:
-                st.divider()
-                st.subheader("📊 Confronto Scenari")
-                sel = st.selectbox("Confronta con baseline", list(st.session_state.scenarios.keys())[1:])
-                base = st.session_state.scenarios["📍 BASELINE"]
-                other = st.session_state.scenarios[sel]
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    delta = len(other['result']) - len(base['result'])
-                    st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", f"{delta:+d}")
-                with c2:
-                    st.metric("Clienti", f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
-                with c3:
-                    st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
-            st.divider()
-            st.subheader(" Dettaglio Scenario Corrente")
-            disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c',
-                        'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
-                        'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
-            disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume',
-                            'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
-            disp_fmt = disp.copy()
-            for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']:
-                disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
-            for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']:
-                disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
-            disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
-            disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
-            def color_sat(v):
-                if pd.isna(v): return ''
-                try:
-                    clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
-                    n = float(clean)
-                    if n > 110: return 'background-color:#ffcdd2;color:#b71c1c'
-                    elif n > 100: return 'background-color:#ffe0b2;color:#e65100'
-                    elif n > 85: return 'background-color:#fff9c4;color:#f57f17'
-                    else: return 'background-color:#c8e6c9;color:#1b5e20'
-                except: return ''
-            styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-            st.divider()
-            st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
-            df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
-            if len(df_map) == 0:
-                st.warning("⚠️ Nessun cliente da visualizzare")
-            else:
-                st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
-                fig = go.Figure()
-                colors = px.colors.qualitative.Alphabet
-                rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(params['active_list'])}
-                for rep in params['active_list']:
-                    sub = df_map[df_map['assigned_rep'] == rep]
-                    if len(sub) >= 3:
-                        lon_h, lat_h = compute_hull_coords(sub)
-                        if lon_h is not None:
-                            fig.add_trace(go.Scattermapbox(
-                                mode='lines', lon=lon_h, lat=lat_h,
-                                line=dict(width=1.5, color=rep_colors[rep]),
-                                fill='toself', fillcolor=rep_colors[rep],
-                                opacity=0.25,
-                                name=f"Zona {rep}",
-                                hoverinfo='name'
-                            ))
-                classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
-                for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
-                    df_c = df_map[df_map['classe'] == classe]
-                    if len(df_c) > 0:
-                        # FIX STREAMLIT CLOUD: hoverdata non è supportato in Scattermapbox
-                        fig.add_trace(go.Scattermapbox(
-                            lat=df_c['latitudine'], lon=df_c['longitudine'],
-                            mode='markers', marker=dict(size=size, color=color, opacity=0.8),
-                            name=f"Classe {classe}",
-                            text=df_c['assigned_rep'].values,
-                            hoverinfo='name+text'
-                        ))
-                df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
-                    subset=['latitudine', 'longitudine']
-                )
-                if len(df_v_active) > 0:
-                    # FIX STREAMLIT CLOUD: symbol e line dentro marker causano ValueError
-                    fig.add_trace(go.Scattermapbox(
-                        lat=df_v_active['latitudine'],
-                        lon=df_v_active['longitudine'],
-                        mode='markers',
-                        marker=dict(size=14, color='black', opacity=0.9),
-                        name=' Home Base',
-                        hoverinfo='name'
-                    ))
-                fig.update_layout(
-                    mapbox_style="carto-positron",
-                    mapbox_zoom=5.5,
-                    mapbox_center=dict(lat=42.5, lon=12.5),
-                    margin=dict(r=0, t=30, l=0, b=120),
-                    height=650,
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=-0.15,
-                        xanchor="center",
-                        x=0.5,
-                        bgcolor='rgba(255,255,255,0.95)',
-                        bordercolor='gray',
-                        borderwidth=1
-                    )
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            st.divider()
-            st.subheader("💾 Export Dati")
-            export_df = res.copy()
-            export_df['timestamp'] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
-            csv = export_df.to_csv(index=False, sep=';', decimal=',')
-            st.download_button(" Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
+            st.subheader("📊 Confronto Scenari")
+            sel = st.selectbox("Confronta con baseline", list(st.session_state.scenarios.keys())[1:])
+            base = st.session_state.scenarios["📍 BASELINE"]
+            other = st.session_state.scenarios[sel]
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                delta = len(other['result']) - len(base['result'])
+                st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", f"{delta:+d}")
+            with c2:
+                st.metric("Clienti", f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
+            with c3:
+                st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
+        st.divider()
+        st.subheader(" Dettaglio Scenario Corrente")
+        disp = res[['sales_rep', 'stato', 'n_clienti', 'n_clienti_uniq', 'n_classe_a', 'n_classe_b', 'n_classe_c',
+                    'volume_totale', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
+                    'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
+        disp.columns = ['Venditore', 'Stato', 'Clienti', 'Unici', 'A', 'B', 'C', 'Volume',
+                        'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
+        disp_fmt = disp.copy()
+        for col in ['Clienti', 'Unici', 'A', 'B', 'C', 'Volume']:
+            disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
+        for col in ['Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Min/GG']:
+            disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
+        disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
+        disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
+        def color_sat(v):
+            if pd.isna(v): return ''
+            try:
+                clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
+                n = float(clean)
+                if n > 110: return 'background-color:#ffcdd2;color:#b71c1c'
+                elif n > 100: return 'background-color:#ffe0b2;color:#e65100'
+                elif n > 85: return 'background-color:#fff9c4;color:#f57f17'
+                else: return 'background-color:#c8e6c9;color:#1b5e20'
+            except: return ''
+        styled = disp_fmt.style.map(color_sat, subset=['Sat %']).set_properties(**{'text-align': 'center'})
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.divider()
+        st.subheader("️ Mappa Territori e Distribuzione Clienti")
+        df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
+        if len(df_map) == 0:
+            st.warning("⚠️ Nessun cliente da visualizzare")
         else:
-            st.info(" Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
+            st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
+            fig = go.Figure()
+            colors = px.colors.qualitative.Alphabet
+            rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(params['active_list'])}
+            for rep in params['active_list']:
+                sub = df_map[df_map['assigned_rep'] == rep]
+                if len(sub) >= 3:
+                    lon_h, lat_h = compute_hull_coords(sub)
+                    if lon_h is not None:
+                        fig.add_trace(go.Scattermapbox(
+                            mode='lines', lon=lon_h, lat=lat_h,
+                            line=dict(width=1.5, color=rep_colors[rep]),
+                            fill='toself', fillcolor=rep_colors[rep],
+                            opacity=0.25,
+                            name=f"Zona {rep}",
+                            hoverinfo='name'
+                        ))
+            classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
+            for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
+                df_c = df_map[df_map['classe'] == classe]
+                if len(df_c) > 0:
+                    # FIX STREAMLIT CLOUD: hoverdata sostituito con text
+                    fig.add_trace(go.Scattermapbox(
+                        lat=df_c['latitudine'], lon=df_c['longitudine'],
+                        mode='markers', marker=dict(size=size, color=color, opacity=0.8),
+                        name=f"Classe {classe}",
+                        text=df_c['assigned_rep'].values,
+                        hoverinfo='name+text'
+                    ))
+            df_v_active = df_v_curr[df_v_curr['sales rep'].isin(params['active_list'])].dropna(
+                subset=['latitudine', 'longitudine']
+            )
+            if len(df_v_active) > 0:
+                # FIX STREAMLIT CLOUD: rimosso symbol e line non supportati
+                fig.add_trace(go.Scattermapbox(
+                    lat=df_v_active['latitudine'],
+                    lon=df_v_active['longitudine'],
+                    mode='markers',
+                    marker=dict(size=14, color='black', opacity=0.9),
+                    name=' Home Base',
+                    hoverinfo='name'
+                ))
+            fig.update_layout(
+                mapbox_style="carto-positron",
+                mapbox_zoom=5.5,
+                mapbox_center=dict(lat=42.5, lon=12.5),
+                margin=dict(r=0, t=30, l=0, b=120),
+                height=650,
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=-0.15,
+                    xanchor="center",
+                    x=0.5,
+                    bgcolor='rgba(255,255,255,0.95)',
+                    bordercolor='gray',
+                    borderwidth=1
+                )
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        st.divider()
+        st.subheader("💾 Export Dati")
+        export_df = res.copy()
+        export_df['timestamp'] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+        csv = export_df.to_csv(index=False, sep=';', decimal=',')
+        st.download_button(" Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
+    else:
+        st.info(" Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
 
 if __name__ == "__main__":
     main()
