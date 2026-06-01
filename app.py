@@ -7,18 +7,21 @@ from scipy.spatial import ConvexHull
 import warnings
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
-
 # =============================================================================
 # HELPER: FORMATTAZIONE EUROPEA NUMERI
 # =============================================================================
 def fmt_eu(value, decimals=0, suffix='', prefix=''):
-    if pd.isna(value): return ''
+    if pd.isna(value):
+        return ''
     try:
         num = float(value)
-        if decimals == 0: formatted = f"{num:,.0f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        else: formatted = f"{num:,.{decimals}f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        if decimals == 0:
+            formatted = f"{num:,.0f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        else:
+            formatted = f"{num:,.{decimals}f}".replace(',', 'X').replace('.', ',').replace('X', '.')
         return f"{prefix}{formatted}{suffix}"
-    except: return str(value)
+    except:
+        return str(value)
 
 # =============================================================================
 # CONFIGURAZIONE: RETE STRADALE E VELOCITÀ (LIVELLO 1)
@@ -83,36 +86,45 @@ def classify_abc(df, volume_col, da_a, da_b, da_c):
     return df
 
 def compute_hull_coords(df_customers):
-    if len(df_customers) < 3: return None, None
+    if len(df_customers) < 3:
+        return None, None
     try:
         pts = df_customers[['longitudine', 'latitudine']].values
         hull = ConvexHull(pts)
         idx = np.append(hull.vertices, hull.vertices[0])
         return pts[idx, 0], pts[idx, 1]
-    except: return None, None
+    except:
+        return None, None
 
-def calculate_travel_metrics(df_customers, rep_home_lat, rep_home_lon, circuity_dict, speed_dict):
-    if len(df_customers) == 0: return 0.0, 0.0
-    
+# >>> MODIFICA 1: Calcolo con Circuity + Velocità Provinciali <<<
+def calculate_travel_km_aggregated(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day, circuity_dict, speed_dict):
+    if len(df_customers) == 0:
+        return 0.0, 0.0
     custs = df_customers.copy()
     air_dists = haversine_km(custs['longitudine'].values, custs['latitudine'].values, rep_home_lon, rep_home_lat)
     custs['air_dist'] = air_dists
     total_visits = custs['freq_visite'].sum()
-    if total_visits == 0: return 0.0, 0.0
+    if total_visits == 0:
+        return 0.0, 0.0
 
+    # Fattore circuity specifico per provincia
     custs['circuity'] = custs['sigla'].map(circuity_dict).fillna(1.35)
     custs['road_dist'] = air_dists * custs['circuity']
     avg_road_dist = (custs['road_dist'] * custs['freq_visite']).sum() / total_visits
 
+    # Velocità media ponderata sul territorio del venditore
     custs['speed'] = custs['sigla'].map(speed_dict).fillna(50)
     weighted_speed = (custs['speed'] * custs['freq_visite']).sum() / total_visits
 
+    # Sostituisce i vecchi fattori dispersione/efficienza e il *2.0 andata-ritorno
+    # 1.35 è lo standard logistico per tour multi-stop giornalieri
     routing_factor = 1.35
     km_annui = total_visits * avg_road_dist * routing_factor
     ore_viaggio = km_annui / weighted_speed if weighted_speed > 0 else 0
     
     return km_annui, ore_viaggio
 
+# >>> MODIFICA 2: Rimozione parametro vel_media dalla signature <<<
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
                    max_stops_per_day, use_nearest_neighbor=False):
@@ -120,7 +132,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
     df_v_valid = df_v_act[valid_mask]
-    if len(df_v_valid) == 0: return None, "Errore: nessun venditore selezionato ha coordinate lat/lon valide."
+    if len(df_v_valid) == 0:
+        return None, "Errore: nessun venditore selezionato ha coordinate lat/lon valide."
     if len(df_v_valid) < len(active_list):
         missing = set(active_list) - set(df_v_valid['sales rep'])
         st.warning(f"⚠️ {len(missing)} venditori esclusi (coordinate mancanti): {', '.join(list(missing))}")
@@ -129,7 +142,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
     df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
     df_w = df_w[df_w['classe'] != 'Non Attivo'].copy()
-    if len(df_w) == 0: return None, "Nessun cliente attivo sopra la soglia minima C."
+    if len(df_w) == 0:
+        return None, "Nessun cliente attivo sopra la soglia minima C."
 
     if use_nearest_neighbor:
         c_lats, c_lons = df_w['latitudine'].values, df_w['longitudine'].values
@@ -144,14 +158,21 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         df_w['dist_km'] = min_dists
         df_w['assegnazione'] = 'nearest_neighbor'
     else:
-        if 'sales rep' not in df_w.columns: return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
+        if 'sales rep' not in df_w.columns:
+            return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
         df_w['assigned_rep'] = df_w['sales rep']
         df_w = df_w[df_w['assigned_rep'].isin(active_list)].copy()
-        df_w = df_w.merge(df_v_valid[['sales rep', 'latitudine', 'longitudine']].rename(
-            columns={'latitudine': 'rep_lat', 'longitudine': 'rep_lon', 'sales rep': 'assigned_rep'}),
-            on='assigned_rep', how='left')
-        df_w['dist_km'] = haversine_km(df_w['longitudine'].values, df_w['latitudine'].values,
-                                       df_w['rep_lon'].values, df_w['rep_lat'].values)
+        df_w = df_w.merge(
+            df_v_valid[['sales rep', 'latitudine', 'longitudine']].rename(
+                columns={'latitudine': 'rep_lat', 'longitudine': 'rep_lon', 'sales rep': 'assigned_rep'}
+            ),
+            on='assigned_rep',
+            how='left'
+        )
+        df_w['dist_km'] = haversine_km(
+            df_w['longitudine'].values, df_w['latitudine'].values,
+            df_w['rep_lon'].values, df_w['rep_lat'].values
+        )
         df_w['assegnazione'] = 'attuale'
         df_w['rep_lat'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
         df_w['rep_lon'] = df_w['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
@@ -166,7 +187,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         if len(sub) > 0:
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
-            km_totali, ore_viag = calculate_travel_metrics(sub, rep_lat, rep_lon, PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED)
+            # >>> MODIFICA 3: Unpack dei due valori restituiti <<<
+            km_totali, ore_viag = calculate_travel_km_aggregated(sub, rep_lat, rep_lon, max_stops_per_day, PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED)
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
         else:
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0, 'km_annui': 0.0})
@@ -193,7 +215,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         if s > 110: return "🔴 CRITICO"
         elif s > 100: return "🟠 OVERLOAD"
         elif s > 85: return "⚠️ ATTENZIONE"
-        else: return "🟢 OK"
+        else: return " OK"
     agg['stato'] = agg['saturazione_pct'].apply(get_alert)
 
     all_reps = pd.DataFrame({'sales_rep': active_list})
@@ -231,7 +253,7 @@ def main():
         st.subheader("📥 Dati di Input")
         uploaded = st.file_uploader("Carica Excel (Clienti + Venditori)", type=['xlsx'])
         if not uploaded:
-            st.info("👆 Carica il file Excel per iniziare")
+            st.info(" Carica il file Excel per iniziare")
             return
 
         file_signature = f"{uploaded.name}_{uploaded.size}"
@@ -253,11 +275,11 @@ def main():
         df_v.columns = [str(c).strip().lower() for c in df_v.columns]
         for col in ['latitudine', 'longitudine', 'sigla']:
             if col not in df_c.columns:
-                st.error(f"❌ Clienti: manca colonna '{col}'")
+                st.error(f" Clienti: manca colonna '{col}'")
                 return
         for col in ['latitudine', 'longitudine', 'sales rep']:
             if col not in df_v.columns:
-                st.error(f"❌ Venditori: manca colonna '{col}'")
+                st.error(f" Venditori: manca colonna '{col}'")
                 return
         for col in ['latitudine', 'longitudine']:
             df_c[col] = pd.to_numeric(df_c[col], errors='coerce')
@@ -280,11 +302,13 @@ def main():
         col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
-        gg_lavoro = st.number_input("📅 Giorni lavorativi/anno", 180, 260, 220, step=5)
+        gg_lavoro = st.number_input(" Giorni lavorativi/anno", 180, 260, 220, step=5)
         pausa_pranzo = st.slider("🍽️ Pausa pranzo (min/giorno)", 0, 120, 60, step=5)
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
-        max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
+        
+        # >>> MODIFICA 4: Slider velocità rimosso <<<
+        max_stops_per_day = st.slider(" Max visite/giorno", 3, 10, 5, step=1)
         
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
@@ -292,7 +316,7 @@ def main():
             rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
 
         # =============================================================================
-        # MATRICE ABC - ESATTAMENTE COME NEL TUO CODICE ORIGINALE
+        # MATRICE ABC COMPLETA (CON MIN E MAX) - IDENTICA ALL'ORIGINALE
         # =============================================================================
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
@@ -305,22 +329,22 @@ def main():
             }
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.markdown("**🟢 Classe A**")
+            st.markdown("** Classe A**")
             da_a = st.number_input("da ≥", key="da_a_input", value=st.session_state.abc_vals['da_a'], min_value=0, step=1)
             a_a = st.number_input("a <", key="a_a_input", value=st.session_state.abc_vals['a_a'], min_value=-1, step=1, help="-1 = infinito")
             freq_a = st.number_input("Visite/anno", key="freq_a_input", value=st.session_state.abc_vals['freq_a'], min_value=0, step=1)
         with col2:
-            st.markdown("**🟡 Classe B**")
+            st.markdown("** Classe B**")
             da_b = st.number_input("da ≥", key="da_b_input", value=st.session_state.abc_vals['da_b'], min_value=0, step=1)
             a_b = st.number_input("a <", key="a_b_input", value=st.session_state.abc_vals['a_b'], min_value=-1, step=1, help="-1 = infinito")
             freq_b = st.number_input("Visite/anno", key="freq_b_input", value=st.session_state.abc_vals['freq_b'], min_value=0, step=1)
         with col3:
-            st.markdown("**🔴 Classe C**")
+            st.markdown("** Classe C**")
             da_c = st.number_input("da ≥", key="da_c_input", value=st.session_state.abc_vals['da_c'], min_value=0, step=1)
             a_c = st.number_input("a <", key="a_c_input", value=st.session_state.abc_vals['a_c'], min_value=-1, step=1, help="-1 = infinito")
             freq_c = st.number_input("Visite/anno", key="freq_c_input", value=st.session_state.abc_vals['freq_c'], min_value=0, step=1)
         with col4:
-            st.markdown("**🔵 Non Attivi**")
+            st.markdown("** Non Attivi**")
             da_na = st.number_input("da ≥", key="da_na_input", value=st.session_state.abc_vals['da_na'], min_value=0, step=1)
             a_na = st.number_input("a <", key="a_na_input", value=st.session_state.abc_vals['a_na'], min_value=-1, step=1, help="-1 = infinito")
             freq_na = st.number_input("Visite/anno", key="freq_na_input", value=st.session_state.abc_vals['freq_na'], min_value=0, step=1)
@@ -363,6 +387,7 @@ def main():
                 if len(active_list) == 0:
                     st.error("⚠️ Seleziona almeno un venditore")
                 else:
+                    # >>> MODIFICA 5: Chiamata aggiornata senza vel_media <<<
                     res, df_w = run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                                                freq_a, freq_b, freq_c, dur_visita, ore_effettive_gg, gg_lavoro,
                                                max_stops_per_day, use_nearest_neighbor=use_nn)
@@ -458,7 +483,7 @@ def main():
         st.subheader("🗺️ Mappa Territori e Distribuzione Clienti")
         df_map = df_w.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
         if len(df_map) == 0:
-            st.warning("⚠️ Nessun cliente da visualizzare")
+            st.warning("️ Nessun cliente da visualizzare")
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
             fig = go.Figure()
@@ -506,7 +531,7 @@ def main():
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
         st.download_button("📥 Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
     else:
-        st.info("📥 Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
+        st.info("📥 Carica Excel e clicca ' Lancia Simulazione' per iniziare.")
 
 if __name__ == "__main__":
     main()
