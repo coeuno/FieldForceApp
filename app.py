@@ -801,15 +801,67 @@ def main():
 
         recv_df = pd.DataFrame(recv_data)
 
+        # --- CALCOLA SATURAZIONE FUTURA PER TUTTI I RICEVENTI ---
+        future_data = {}
+        for rep in recv_df['_rep']:
+            future_data[rep] = {'add_abc': 0, 'fut_sat': None}
+
+        abc = st.session_state.abc_vals
+        for rep in recv_df['_rep']:
+            test_receivers = [rep]
+            df_temp = apply_reassignment(
+                st.session_state.df_c_working, removed_name, test_receivers, df_v
+            )
+            temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
+            temp_active = [r for r in temp_active if r != removed_name]
+            temp_active = list(dict.fromkeys(temp_active + test_receivers))
+
+            if len(temp_active) > 0:
+                temp_res, _ = run_simulation(
+                    df_temp, df_v, temp_active, col_vol,
+                    abc['da_a'], abc['da_b'], abc['da_c'],
+                    abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                    dur_visita, ore_effettive_gg, gg_lavoro,
+                    max_stops_per_day
+                )
+
+                if temp_res is not None and rep in temp_res['sales_rep'].values:
+                    fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
+                    future_data[rep]['fut_sat'] = fut_sat
+
+                    alloc = preview_allocation(orphan_df, test_receivers, st.session_state.df_c_working, df_v)
+                    if rep in alloc and len(alloc[rep]) > 0:
+                        assigned_indices = [i for i, _ in alloc[rep]]
+                        sub_assigned = orphan_df.loc[assigned_indices]
+                        sub_assigned = classify_abc(
+                            sub_assigned, col_vol,
+                            abc['da_a'], abc['da_b'], abc['da_c']
+                        )
+                        add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
+                        future_data[rep]['add_abc'] = add_abc
+
+        # Funzione per colorare saturazione
+        def color_sat_cell(val):
+            if val is None or pd.isna(val):
+                return "—"
+            try:
+                v = float(val)
+                if v > 110: return f"<span style='color:#ff4444;font-weight:bold'>{v:.1f}% 🔴</span>"
+                elif v > 100: return f"<span style='color:#ff8800;font-weight:bold'>{v:.1f}% 🟠</span>"
+                elif v > 85: return f"<span style='color:#ffcc00;font-weight:bold'>{v:.1f}% 🟡</span>"
+                else: return f"<span style='color:#44ff44;font-weight:bold'>{v:.1f}% 🟢</span>"
+            except:
+                return str(val)
+
         # --- CHECKBOX INTERATTIVE NELLA TABELLA (st.data_editor) ---
         display_df = pd.DataFrame({
             'Seleziona': recv_df['_selected'].tolist(),
             'Ricevente': recv_df['_rep'].tolist(),
             'Clienti A-B-C attuali': recv_df['_current_abc'].tolist(),
-            'Sat. Attuale': [f"{s:.1f}%" for s in recv_df['_sat']],
+            'Sat. Attuale': [color_sat_cell(s) for s in recv_df['_sat']],
             'Distanza media (km) nuovi clienti': [f"{d:.1f}" for d in recv_df['_avg_dist']],
-            'Clienti A-B-C aggiuntivi': [0] * len(recv_df),
-            'Sat. Futura': ["—"] * len(recv_df)
+            'Clienti A-B-C aggiuntivi': [future_data[r]['add_abc'] for r in recv_df['_rep']],
+            'Sat. Futura': [color_sat_cell(future_data[r]['fut_sat']) for r in recv_df['_rep']]
         })
 
         edited = st.data_editor(
@@ -833,85 +885,10 @@ def main():
                       "Distanza media (km) nuovi clienti", "Clienti A-B-C aggiuntivi", "Sat. Futura"],
             hide_index=True,
             use_container_width=True,
-            key="recv_editor_v5"
+            key="recv_editor_v6"
         )
 
         selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
-
-        # --- CALCOLA E AGGIORNA COLONNE DINAMICHE ---
-        if selected_receivers:
-            abc = st.session_state.abc_vals
-            df_temp = apply_reassignment(
-                st.session_state.df_c_working, removed_name, selected_receivers, df_v
-            )
-            temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
-            temp_active = [r for r in temp_active if r != removed_name]
-            temp_active = list(dict.fromkeys(temp_active + selected_receivers))
-
-            if len(temp_active) > 0:
-                temp_res, temp_df_w = run_simulation(
-                    df_temp, df_v, temp_active, col_vol,
-                    abc['da_a'], abc['da_b'], abc['da_c'],
-                    abc['freq_a'], abc['freq_b'], abc['freq_c'],
-                    dur_visita, ore_effettive_gg, gg_lavoro,
-                    max_stops_per_day
-                )
-
-                if temp_res is not None:
-                    # Calcola clienti aggiuntivi per ogni ricevente
-                    alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
-
-                    for idx, row in edited.iterrows():
-                        rep = row['Ricevente']
-
-                        # Clienti A-B-C aggiuntivi
-                        if rep in alloc and len(alloc[rep]) > 0:
-                            assigned_indices = [i for i, _ in alloc[rep]]
-                            sub_assigned = orphan_df.loc[assigned_indices]
-                            sub_assigned = classify_abc(
-                                sub_assigned, col_vol,
-                                abc['da_a'], abc['da_b'], abc['da_c']
-                            )
-                            add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
-                            edited.at[idx, 'Clienti A-B-C aggiuntivi'] = add_abc
-
-                        # Saturazione futura
-                        if rep in temp_res['sales_rep'].values:
-                            fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
-                            edited.at[idx, 'Sat. Futura'] = f"{fut_sat:.1f}%"
-
-        # Colora saturazione attuale e futura
-        def color_sat_cell(val):
-            if val == "—" or pd.isna(val):
-                return val
-            try:
-                v = float(str(val).replace('%', ''))
-                if v > 110: return f"<span style='color:#ff4444;font-weight:bold'>{val} 🔴</span>"
-                elif v > 100: return f"<span style='color:#ff8800;font-weight:bold'>{val} 🟠</span>"
-                elif v > 85: return f"<span style='color:#ffcc00;font-weight:bold'>{val} 🟡</span>"
-                else: return f"<span style='color:#44ff44;font-weight:bold'>{val} 🟢</span>"
-            except:
-                return str(val)
-
-        # Ricostruisci tabella HTML con dati aggiornati (UNICA TABELLA)
-        recv_headers = ['Seleziona', 'Ricevente', 'Clienti A-B-C attuali', 'Sat. Attuale', 
-                        'Distanza media (km) nuovi clienti', 'Clienti A-B-C aggiuntivi', 'Sat. Futura']
-        recv_rows = []
-        for idx, row in edited.iterrows():
-            checked = "✅" if row['Seleziona'] else "⬜"
-            sat_color = color_sat_cell(row['Sat. Attuale'])
-            fut_color = color_sat_cell(row['Sat. Futura'])
-            recv_rows.append([
-                checked,
-                row['Ricevente'],
-                str(row['Clienti A-B-C attuali']),
-                sat_color,
-                row['Distanza media (km) nuovi clienti'],
-                str(row['Clienti A-B-C aggiuntivi']) if row['Clienti A-B-C aggiuntivi'] > 0 else "—",
-                fut_color
-            ])
-
-        st.markdown(render_html_table(recv_headers, recv_rows, "12px"), unsafe_allow_html=True)
 
         if selected_receivers:
             st.caption("La saturazione futura è calcolata con il modello completo (viaggio reale + visite reali).")
