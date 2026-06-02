@@ -754,29 +754,74 @@ def main():
             st.warning(f"Nessun ricevente entro {max_km} km. Prova ad aumentare la distanza massima.")
             st.stop()
 
-        # --- TABELLA RICEVENTI CON DATA_EDITOR ---
         # --- TABELLA RICEVENTI UNIFICATA CON SATURAZIONE FUTURA ---
-        # Prepara DataFrame per data_editor con colonna checkbox
+        # Prepara dati riceventi
         recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
             is_suggested = i < 3
+
+            # Clienti A-B-C attuali del ricevente
+            rep_current_clients = st.session_state.df_c_working[
+                st.session_state.df_c_working['sales rep'] == rep
+            ].copy()
+            rep_current_clients = classify_abc(
+                rep_current_clients, col_vol,
+                st.session_state.abc_vals['da_a'],
+                st.session_state.abc_vals['da_b'],
+                st.session_state.abc_vals['da_c']
+            )
+            current_abc = int((rep_current_clients['classe'].isin(['A','B','C'])).sum())
+
             recv_data.append({
-                'Seleziona': is_suggested,
-                'Ricevente': rep,
-                'Sat. Attuale': sat,
-                'Distanza media (km)': f"{avg_dist:.1f}",
-                'Sat. Futura Calcolata': None,  # Populated dynamically
+                '_rep': rep,
                 '_score': score,
                 '_sat': sat,
                 '_avg_dist': avg_dist,
-                '_cap': cap
+                '_cap': cap,
+                '_current_abc': current_abc,
+                '_selected': is_suggested
             })
 
         recv_df = pd.DataFrame(recv_data)
 
-        # Se ci sono riceventi selezionati, calcola saturazione futura
-        selected_receivers = [r for r, sel in zip(recv_df['Ricevente'], recv_df['Seleziona']) if sel]
+        # --- CHECKBOX INTERATTIVE NELLA TABELLA (st.data_editor) ---
+        display_df = pd.DataFrame({
+            'Seleziona': recv_df['_selected'].tolist(),
+            'Ricevente': recv_df['_rep'].tolist(),
+            'Clienti A-B-C attuali': recv_df['_current_abc'].tolist(),
+            'Sat. Attuale': [f"{s:.1f}%" for s in recv_df['_sat']],
+            'Distanza media (km) nuovi clienti': [f"{d:.1f}" for d in recv_df['_avg_dist']],
+            'Clienti A-B-C aggiuntivi': [0] * len(recv_df),
+            'Sat. Futura': ["—"] * len(recv_df)
+        })
 
+        edited = st.data_editor(
+            display_df,
+            column_config={
+                "Seleziona": st.column_config.CheckboxColumn(
+                    "Seleziona",
+                    help="Spunta per selezionare questo ricevente",
+                    default=False,
+                ),
+                "Ricevente": st.column_config.TextColumn("Ricevente", disabled=True),
+                "Clienti A-B-C attuali": st.column_config.NumberColumn("Clienti A-B-C attuali", disabled=True),
+                "Sat. Attuale": st.column_config.TextColumn("Sat. Attuale", disabled=True),
+                "Distanza media (km) nuovi clienti": st.column_config.TextColumn(
+                    "Distanza media (km) nuovi clienti", disabled=True
+                ),
+                "Clienti A-B-C aggiuntivi": st.column_config.NumberColumn("Clienti A-B-C aggiuntivi", disabled=True),
+                "Sat. Futura": st.column_config.TextColumn("Sat. Futura", disabled=True),
+            },
+            disabled=["Ricevente", "Clienti A-B-C attuali", "Sat. Attuale", 
+                      "Distanza media (km) nuovi clienti", "Clienti A-B-C aggiuntivi", "Sat. Futura"],
+            hide_index=True,
+            use_container_width=True,
+            key="recv_editor_v4"
+        )
+
+        selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
+
+        # --- CALCOLA E AGGIORNA COLONNE DINAMICHE ---
         if selected_receivers:
             abc = st.session_state.abc_vals
             df_temp = apply_reassignment(
@@ -787,7 +832,7 @@ def main():
             temp_active = list(dict.fromkeys(temp_active + selected_receivers))
 
             if len(temp_active) > 0:
-                temp_res, _ = run_simulation(
+                temp_res, temp_df_w = run_simulation(
                     df_temp, df_v, temp_active, col_vol,
                     abc['da_a'], abc['da_b'], abc['da_c'],
                     abc['freq_a'], abc['freq_b'], abc['freq_c'],
@@ -796,60 +841,66 @@ def main():
                 )
 
                 if temp_res is not None:
-                    for idx, row in recv_df.iterrows():
+                    # Calcola clienti aggiuntivi per ogni ricevente
+                    alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
+
+                    for idx, row in edited.iterrows():
                         rep = row['Ricevente']
+
+                        # Clienti A-B-C aggiuntivi
+                        if rep in alloc and len(alloc[rep]) > 0:
+                            assigned_indices = [i for i, _ in alloc[rep]]
+                            sub_assigned = orphan_df.loc[assigned_indices]
+                            sub_assigned = classify_abc(
+                                sub_assigned, col_vol,
+                                abc['da_a'], abc['da_b'], abc['da_c']
+                            )
+                            add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
+                            edited.at[idx, 'Clienti A-B-C aggiuntivi'] = add_abc
+
+                        # Saturazione futura
                         if rep in temp_res['sales_rep'].values:
                             fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
-                            recv_df.at[idx, 'Sat. Futura Calcolata'] = fut_sat
+                            edited.at[idx, 'Sat. Futura'] = f"{fut_sat:.1f}%"
 
-        # Colora saturazione per la visualizzazione HTML
-        def color_sat(val):
-            if pd.isna(val) or val is None:
-                return "—"
+        # Colora saturazione attuale e futura
+        def color_sat_cell(val):
+            if val == "—" or pd.isna(val):
+                return val
             try:
-                v = float(val)
-                if v > 110: return f"<span style='color:#ff4444;font-weight:bold'>{v:.1f}% 🔴</span>"
-                elif v > 100: return f"<span style='color:#ff8800;font-weight:bold'>{v:.1f}% 🟠</span>"
-                elif v > 85: return f"<span style='color:#ffcc00;font-weight:bold'>{v:.1f}% 🟡</span>"
-                else: return f"<span style='color:#44ff44;font-weight:bold'>{v:.1f}% 🟢</span>"
+                v = float(str(val).replace('%', ''))
+                if v > 110: return f"<span style='color:#ff4444;font-weight:bold'>{val} 🔴</span>"
+                elif v > 100: return f"<span style='color:#ff8800;font-weight:bold'>{val} 🟠</span>"
+                elif v > 85: return f"<span style='color:#ffcc00;font-weight:bold'>{val} 🟡</span>"
+                else: return f"<span style='color:#44ff44;font-weight:bold'>{val} 🟢</span>"
             except:
                 return str(val)
 
-        # Costruisci tabella HTML con colori
-        recv_headers = ['Seleziona', 'Ricevente', 'Sat. Attuale', 'Distanza media (km)', 'Sat. Futura Calcolata']
+        # Ricostruisci tabella HTML con dati aggiornati
+        recv_headers = ['Seleziona', 'Ricevente', 'Clienti A-B-C attuali', 'Sat. Attuale', 
+                        'Distanza media (km) nuovi clienti', 'Clienti A-B-C aggiuntivi', 'Sat. Futura']
         recv_rows = []
-        for idx, row in recv_df.iterrows():
+        for idx, row in edited.iterrows():
             checked = "✅" if row['Seleziona'] else "⬜"
-            sat_display = color_sat(row['Sat. Attuale'])
-            fut_display = color_sat(row['Sat. Futura Calcolata'])
+            sat_color = color_sat_cell(row['Sat. Attuale'])
+            fut_color = color_sat_cell(row['Sat. Futura'])
             recv_rows.append([
                 checked,
-                f"**{row['Ricevente']}**",
-                sat_display,
-                row['Distanza media (km)'],
-                fut_display
+                row['Ricevente'],
+                str(row['Clienti A-B-C attuali']),
+                sat_color,
+                row['Distanza media (km) nuovi clienti'],
+                str(row['Clienti A-B-C aggiuntivi']) if row['Clienti A-B-C aggiuntivi'] > 0 else "—",
+                fut_color
             ])
 
         st.markdown(render_html_table(recv_headers, recv_rows, "12px"), unsafe_allow_html=True)
-
-        # Checkbox sotto la tabella per selezionare/deselezionare
-        st.markdown("---")
-        cols = st.columns(min(len(recv_df), 4))
-        for idx, row in recv_df.iterrows():
-            col_idx = idx % len(cols)
-            with cols[col_idx]:
-                recv_df.at[idx, 'Seleziona'] = st.checkbox(
-                    f"{row['Ricevente']}", 
-                    value=row['Seleziona'],
-                    key=f"chk_recv_{row['Ricevente']}"
-                )
-
-        selected_receivers = recv_df[recv_df['Seleziona']]['Ricevente'].tolist()
 
         if selected_receivers:
             st.caption("La saturazione futura è calcolata con il modello completo (viaggio reale + visite reali).")
 
         st.divider()
+
         st.markdown("### 📊 Preview allocazione clienti")
 
         if not selected_receivers:
