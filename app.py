@@ -634,58 +634,125 @@ def main():
                     st.rerun()
             st.stop()
 
-        # Pannello completo con clienti orfani
-        col_left, col_right = st.columns([1, 1])
+        # --- CARD RIASSUNTIVA CLIENTI ORFANI ---
+        st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
+        
+        # Classifica i clienti orfani
+        orphan_df = classify_abc(orphan_df, col_vol, 
+                                  st.session_state.abc_vals['da_a'],
+                                  st.session_state.abc_vals['da_b'],
+                                  st.session_state.abc_vals['da_c'])
+        
+        n_a = int((orphan_df['classe'] == 'A').sum())
+        n_b = int((orphan_df['classe'] == 'B').sum())
+        n_c = int((orphan_df['classe'] == 'C').sum())
+        n_d = int((orphan_df['classe'] == 'D').sum())
+        
+        vol_a = orphan_df.loc[orphan_df['classe'] == 'A', col_vol].sum() if n_a > 0 else 0
+        vol_b = orphan_df.loc[orphan_df['classe'] == 'B', col_vol].sum() if n_b > 0 else 0
+        vol_c = orphan_df.loc[orphan_df['classe'] == 'C', col_vol].sum() if n_c > 0 else 0
+        vol_d = orphan_df.loc[orphan_df['classe'] == 'D', col_vol].sum() if n_d > 0 else 0
+        
+        c_a, c_b, c_c, c_d = st.columns(4)
+        with c_a: st.metric("🟢 Classe A", f"{n_a} clienti", f"{fmt_eu(vol_a)} vol")
+        with c_b: st.metric("🟡 Classe B", f"{n_b} clienti", f"{fmt_eu(vol_b)} vol")
+        with c_c: st.metric("🔴 Classe C", f"{n_c} clienti", f"{fmt_eu(vol_c)} vol")
+        with c_d: st.metric("⚫ Classe D", f"{n_d} clienti", f"{fmt_eu(vol_d)} vol")
 
-        with col_left:
-            st.markdown(f"**📍 {n_orfani} clienti orfani** da {removed_name}")
-            disp_cols = ['sales rep', 'latitudine', 'longitudine', col_vol]
-            if 'ragione sociale' in orphan_df.columns:
-                disp_cols.insert(0, 'ragione sociale')
-            available_cols = [c for c in disp_cols if c in orphan_df.columns]
-            st.dataframe(orphan_df[available_cols], height=250, use_container_width=True)
+        st.divider()
 
-        with col_right:
-            st.markdown("**🎯 Riceventi suggeriti**")
-            active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
+        # --- TABELLA RICEVENTI CON SELEZIONE ---
+        st.markdown("### 🎯 Seleziona i riceventi")
+        active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
+        
+        ranked = rank_receivers(orphan_df, df_v, st.session_state.get('current_result'), active_reps)
+        
+        if not ranked:
+            st.error("Nessun ricevente disponibile")
+            st.stop()
+
+        # Costruisci DataFrame per la tabella
+        tbl_data = []
+        for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
+            is_suggested = i < 3
+            tbl_data.append({
+                'Seleziona': is_suggested,
+                'Ricevente': rep,
+                'Saturazione %': f"{sat:.1f}",
+                'Cap. Residua %': f"{cap:.1f}",
+                'Distanza media (km)': f"{avg_dist:.1f}",
+                'Score': f"{score:.3f}",
+                'Rank': i + 1
+            })
+        
+        tbl_df = pd.DataFrame(tbl_data)
+        
+        # Streamlit non permette checkbox in st.data_editor senza setup, quindi usiamo
+        # checkbox individuali per ogni ricevente, ordinati
+        st.caption("I primi 3 sono suggeriti dal sistema. Seleziona uno o più riceventi:")
+        
+        selected_receivers = []
+        for _, row in tbl_df.iterrows():
+            col1, col2, col3, col4, col5, col6 = st.columns([1, 3, 2, 2, 2, 1])
+            with col1:
+                badge = "🥇" if row['Rank'] == 1 else "🥈" if row['Rank'] == 2 else "🥉" if row['Rank'] == 3 else f"{int(row['Rank'])}."
+                st.markdown(f"**{badge}**")
+            with col2:
+                st.markdown(f"**{row['Ricevente']}**")
+            with col3:
+                sat_val = float(row['Saturazione %'])
+                color = "green" if sat_val < 85 else "orange" if sat_val < 100 else "red"
+                st.markdown(f"<span style='color:{color}'>{row['Saturazione %']}%</span>", unsafe_allow_html=True)
+            with col4:
+                st.markdown(f"{row['Cap. Residua %']}%")
+            with col5:
+                st.markdown(f"{row['Distanza media (km)']} km")
+            with col6:
+                checked = st.checkbox("Seleziona", value=row['Seleziona'], key=f"sel_recv_{row['Ricevente']}")
+                if checked:
+                    selected_receivers.append(row['Ricevente'])
+
+        # --- PREVIEW ALLOCAZIONE ---
+        st.divider()
+        st.markdown("### 📊 Preview allocazione")
+        
+        if not selected_receivers:
+            st.warning("Seleziona almeno un ricevente per vedere la preview")
+        else:
+            alloc = preview_allocation(orphan_df, selected_receivers, df_v)
             
-            ranked = rank_receivers(orphan_df, df_v, st.session_state.get('current_result'), active_reps)
-            selected = []
+            preview_data = []
+            for r in selected_receivers:
+                n_ass = len(alloc.get(r, []))
+                if n_ass > 0:
+                    avg_d = np.mean([d for _, d in alloc[r]]) if alloc[r] else 0
+                    preview_data.append({
+                        'Ricevente': r,
+                        'Clienti assegnati': n_ass,
+                        'Distanza media (km)': f"{avg_d:.1f}"
+                    })
             
-            if ranked:
-                st.caption("Ordinati per combinazione distanza / saturazione:")
-                for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked[:5]):
-                    badge = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "•"
-                    st.markdown(
-                        f"{badge} **{rep}** | Sat: {sat:.1f}% | Cap.res: {cap:.1f}% | "
-                        f"Distanza media: {avg_dist:.1f} km"
-                    )
+            if preview_data:
+                st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
                 
-                suggested = [r[0] for r in ranked[:3]]
-                selected = st.multiselect(
-                    "Seleziona riceventi", active_reps, default=suggested, key="selected_receivers"
-                )
-                
-                if selected:
-                    alloc = preview_allocation(orphan_df, selected, df_v)
-                    st.markdown("**📊 Preview allocazione**")
-                    for r in selected:
-                        n_ass = len(alloc.get(r, []))
-                        if n_ass > 0:
-                            avg_d = np.mean([d for _, d in alloc[r]]) if alloc[r] else 0
-                            st.markdown(f"→ **{r}**: {n_ass} clienti (distanza media: {avg_d:.1f} km)")
+                # Stima impatto saturazione
+                if st.session_state.get('current_result') is not None:
+                    res = st.session_state.current_result
+                    max_ore = ore_effettive_gg * gg_lavoro
+                    abc = st.session_state.abc_vals
                     
-                    # Stima impatto saturazione
-                    if st.session_state.get('current_result') is not None:
-                        res = st.session_state.current_result
-                        max_ore = ore_effettive_gg * gg_lavoro
-                        abc = st.session_state.abc_vals
-                        for r in selected:
-                            n_ass = len(alloc.get(r, []))
-                            if n_ass > 0 and r in res['sales_rep'].values:
-                                row = res[res['sales_rep'] == r].iloc[0]
-                                # Stima ore aggiuntive
-                                sub_orf = orphan_df.iloc[[i for i, _ in alloc.get(r, [])]]
+                    st.markdown("**Stima nuova saturazione:**")
+                    impact_cols = st.columns(len(selected_receivers))
+                    
+                    for idx, r in enumerate(selected_receivers):
+                        n_ass = len(alloc.get(r, []))
+                        if n_ass > 0 and r in res['sales_rep'].values:
+                            row = res[res['sales_rep'] == r].iloc[0]
+                            
+                            # Stima ore aggiuntive: usa i clienti assegnati a questo ricevente
+                            assigned_indices = [i for i, _ in alloc.get(r, [])]
+                            if assigned_indices:
+                                sub_orf = orphan_df.loc[assigned_indices]
                                 sub_orf = classify_abc(sub_orf, col_vol, abc['da_a'], abc['da_b'], abc['da_c'])
                                 freq_map = {'A': abc['freq_a'], 'B': abc['freq_b'], 'C': abc['freq_c']}
                                 sub_orf['freq'] = sub_orf['classe'].map(freq_map).fillna(0)
@@ -696,28 +763,29 @@ def main():
                                 sat_add = (ore_vis_add + ore_viag_add) / max_ore * 100 if max_ore > 0 else 0
                                 new_sat = row['saturazione_pct'] + sat_add
                                 color = "green" if new_sat < 85 else "orange" if new_sat < 100 else "red"
-                                st.markdown(
-                                    f"   → Nuova sat. stimata per **{r}**: "
-                                    f"<span style='color:{color}'>{new_sat:.1f}%</span> "
-                                    f"(was {row['saturazione_pct']:.1f}%)",
-                                    unsafe_allow_html=True
-                                )
-            else:
-                st.error("Nessun ricevente disponibile")
+                                
+                                with impact_cols[idx]:
+                                    st.metric(
+                                        label=r,
+                                        value=f"{new_sat:.1f}%",
+                                        delta=f"+{sat_add:.1f}%",
+                                        delta_color="inverse" if new_sat > 100 else "normal"
+                                    )
 
+        # --- BOTTONI CONFERMA / ANNULLA ---
         st.divider()
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
-            if st.button("✅ Conferma Riassegnazione", use_container_width=True, disabled=(not selected)):
-                if selected:
+            if st.button("✅ Conferma Riassegnazione", use_container_width=True, disabled=(not selected_receivers)):
+                if selected_receivers:
                     df_new = apply_reassignment(
-                        st.session_state.df_c_working, removed_name, selected, df_v
+                        st.session_state.df_c_working, removed_name, selected_receivers, df_v
                     )
                     st.session_state.df_c_working = df_new
                     st.session_state.removed_reps.append(removed_name)
                     st.session_state.reassignment_history.append({
                         'removed': removed_name,
-                        'receivers': selected,
+                        'receivers': selected_receivers,
                         'n_clients': n_orfani,
                         'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
                     })
