@@ -259,7 +259,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
 
-    # Assegnazione venditori (sempre assegnazione attuale dal file Excel)
+    # Assegnazione venditori (sempre assegnazione attuale dal file Excel o da riassegnazione)
     if 'sales rep' not in df_w.columns:
         return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
     df_w['assigned_rep'] = df_w['sales rep']
@@ -357,9 +357,123 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     return result, df_work
 
 # =============================================================================
+# FUNZIONI DOWNSIZE
+# =============================================================================
+def rank_receivers(orphan_df, df_v, current_result, active_reps):
+    """Rank riceventi per combinazione distanza / saturazione."""
+    df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
+    scores = []
+    for rep in active_reps:
+        rep_rows = df_v_valid[df_v_valid['sales rep'] == rep]
+        if len(rep_rows) == 0:
+            continue
+        rep_row = rep_rows.iloc[0]
+        rep_lat, rep_lon = rep_row['latitudine'], rep_row['longitudine']
+        
+        # Distanza media dai clienti orfani
+        dists = orphan_df.apply(
+            lambda row: haversine_km(row['longitudine'], row['latitudine'], rep_lon, rep_lat),
+            axis=1
+        )
+        avg_dist = dists.mean() if len(dists) > 0 else 9999
+        
+        # Saturazione attuale
+        if current_result is not None and rep in current_result['sales_rep'].values:
+            sat = current_result[current_result['sales_rep'] == rep]['saturazione_pct'].iloc[0]
+        else:
+            sat = 50.0
+        
+        cap_residua = max(0.0, 100.0 - sat)
+        
+        # Score: più alto = migliore
+        dist_score = max(0.0, 1.0 - avg_dist / 300.0)
+        sat_score = cap_residua / 100.0
+        score = 0.4 * dist_score + 0.6 * sat_score
+        
+        scores.append((rep, score, avg_dist, sat, cap_residua))
+    
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores
+
+
+def preview_allocation(orphan_df, selected_receivers, df_v):
+    """Preview: ogni cliente orfano va al ricevente più vicino tra i selezionati."""
+    df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
+    v_coords = df_v_valid[df_v_valid['sales rep'].isin(selected_receivers)][
+        ['sales rep', 'latitudine', 'longitudine']
+    ].set_index('sales rep')
+    
+    allocation = {r: [] for r in selected_receivers if r in v_coords.index}
+    for idx, row in orphan_df.iterrows():
+        best_r = None
+        best_d = float('inf')
+        for r in selected_receivers:
+            if r not in v_coords.index:
+                continue
+            d = haversine_km(
+                row['longitudine'], row['latitudine'],
+                v_coords.loc[r, 'longitudine'], v_coords.loc[r, 'latitudine']
+            )
+            if d < best_d:
+                best_d = d
+                best_r = r
+        if best_r:
+            allocation[best_r].append((idx, best_d))
+    return allocation
+
+
+def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
+    """Applica la riassegnazione: ogni cliente orfano al ricevente più vicino."""
+    df = df_c.copy()
+    orphan_mask = df['sales rep'] == removed_rep
+    if not orphan_mask.any():
+        return df
+    
+    orphan_df = df[orphan_mask].copy()
+    df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
+    v_coords = df_v_valid[df_v_valid['sales rep'].isin(selected_receivers)][
+        ['sales rep', 'latitudine', 'longitudine']
+    ].set_index('sales rep')
+    
+    for idx in orphan_df.index:
+        row = df.loc[idx]
+        best_r = None
+        best_d = float('inf')
+        for r in selected_receivers:
+            if r not in v_coords.index:
+                continue
+            d = haversine_km(
+                row['longitudine'], row['latitudine'],
+                v_coords.loc[r, 'longitudine'], v_coords.loc[r, 'latitudine']
+            )
+            if d < best_d:
+                best_d = d
+                best_r = r
+        if best_r:
+            df.loc[idx, 'sales rep'] = best_r
+    
+    return df
+
+# =============================================================================
 # INTERFACCIA
 # =============================================================================
 def main():
+    # Inizializzazione stato sessione
+    if 'df_c_original' not in st.session_state: st.session_state.df_c_original = None
+    if 'df_c_working' not in st.session_state: st.session_state.df_c_working = None
+    if 'removed_reps' not in st.session_state: st.session_state.removed_reps = []
+    if 'reassignment_history' not in st.session_state: st.session_state.reassignment_history = []
+    if 'pending_removal' not in st.session_state: st.session_state.pending_removal = None
+    if 'rep_status_prev' not in st.session_state: st.session_state.rep_status_prev = {}
+    if 'force_recalc' not in st.session_state: st.session_state.force_recalc = False
+    if 'current_result' not in st.session_state: st.session_state.current_result = None
+    if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
+    if 'current_params' not in st.session_state: st.session_state.current_params = {}
+    if 'current_df_v' not in st.session_state: st.session_state.current_df_v = None
+    if 'abc_version' not in st.session_state: st.session_state.abc_version = 2
+    if 'abc_vals' not in st.session_state: st.session_state.abc_vals = None
+    if 'min_vol' not in st.session_state: st.session_state.min_vol = 0
+
     st.markdown("""
     <style>
     .stDataFrame [data-testid="stDataFrame"] table td, .dataframe td, .dataframe th {
@@ -394,9 +508,17 @@ def main():
         file_signature = f"{uploaded.name}_{uploaded.size}"
         if file_signature != st.session_state.get('last_upload_signature', ''):
             st.session_state.last_upload_signature = file_signature
+            st.session_state.df_c_original = None
+            st.session_state.df_c_working = None
+            st.session_state.removed_reps = []
+            st.session_state.reassignment_history = []
+            st.session_state.pending_removal = None
+            st.session_state.rep_status_prev = {}
             st.session_state.trigger_auto_run = True
             st.session_state.current_result = None
             st.session_state.current_df_work = None
+            st.session_state.current_params = {}
+            st.session_state.current_df_v = None
         try:
             df_c = pd.read_excel(uploaded, sheet_name="clienti_geocodificati")
             df_v = pd.read_excel(uploaded, sheet_name="venditori")
@@ -420,8 +542,15 @@ def main():
         if 'sales rep' not in df_c.columns:
             st.error("❌ Colonna 'sales rep' mancante nel foglio clienti.")
             return
+        
+        # Inizializza working set se necessario
+        if st.session_state.df_c_original is None:
+            st.session_state.df_c_original = df_c.copy()
+        if st.session_state.df_c_working is None:
+            st.session_state.df_c_working = df_c.copy()
+        
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
-        clienti_con_rep = df_c['sales rep'].notna().sum()
+        clienti_con_rep = st.session_state.df_c_working['sales rep'].notna().sum()
         st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
         st.divider()
         st.subheader("⚙️ Parametri Simulazione")
@@ -436,27 +565,183 @@ def main():
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
+        removed_reps = st.session_state.get('removed_reps', [])
         with st.expander("Attiva / Disattiva venditori", expanded=True):
-            rep_status = {r: st.checkbox(r, value=True, key=f"rep_{r}") for r in reps}
+            rep_status = {}
+            for r in reps:
+                if r in removed_reps:
+                    st.checkbox(f"~~{r}~~ (rimosso)", value=False, disabled=True, key=f"rep_{r}")
+                    rep_status[r] = False
+                else:
+                    default_val = st.session_state.rep_status_prev.get(r, True)
+                    rep_status[r] = st.checkbox(r, value=default_val, key=f"rep_{r}")
+
+    # =============================================================================
+    # DOPO SIDEBAR: usa il working set come fonte di verità
+    # =============================================================================
+    df_c = st.session_state.df_c_working
+
+    # =============================================================================
+    # RILEVAMENTO RIMOZIONE VENDITORE
+    # =============================================================================
+    if uploaded and not st.session_state.get('pending_removal'):
+        for r in reps:
+            if r not in removed_reps:
+                prev_val = st.session_state.rep_status_prev.get(r, True)
+                curr_val = rep_status[r]
+                if prev_val and not curr_val:
+                    orphan = st.session_state.df_c_working[
+                        st.session_state.df_c_working['sales rep'] == r
+                    ].copy()
+                    st.session_state.pending_removal = {
+                        'rep': r,
+                        'orphan_clients': orphan
+                    }
+                    st.rerun()
+
+    # =============================================================================
+    # PANNELLO DI RIASSEGNAZIONE
+    # =============================================================================
+    if st.session_state.get('pending_removal'):
+        rem = st.session_state.pending_removal
+        removed_name = rem['rep']
+        orphan_df = rem['orphan_clients']
+        n_orfani = len(orphan_df)
+
+        st.divider()
+        st.subheader(f"🔴 Riassegnazione richiesta: {removed_name}")
+
+        if n_orfani == 0:
+            st.warning(f"⚠️ {removed_name} non ha clienti assegnati. Rimozione immediata.")
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                if st.button("✅ Conferma Rimozione", use_container_width=True):
+                    st.session_state.removed_reps.append(removed_name)
+                    st.session_state.reassignment_history.append({
+                        'removed': removed_name,
+                        'receivers': [],
+                        'n_clients': 0,
+                        'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
+                    })
+                    st.session_state.pending_removal = None
+                    st.session_state.force_recalc = True
+                    st.session_state.rep_status_prev = {r: rep_status[r] for r in reps}
+                    st.rerun()
+            with c2:
+                if st.button("❌ Annulla", use_container_width=True):
+                    st.session_state[f"rep_{removed_name}"] = True
+                    st.session_state.pending_removal = None
+                    st.rerun()
+            st.stop()
+
+        # Pannello completo con clienti orfani
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
+            st.markdown(f"**📍 {n_orfani} clienti orfani** da {removed_name}")
+            disp_cols = ['sales rep', 'latitudine', 'longitudine', col_vol]
+            if 'ragione sociale' in orphan_df.columns:
+                disp_cols.insert(0, 'ragione sociale')
+            available_cols = [c for c in disp_cols if c in orphan_df.columns]
+            st.dataframe(orphan_df[available_cols], height=250, use_container_width=True)
+
+        with col_right:
+            st.markdown("**🎯 Riceventi suggeriti**")
+            active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
+            
+            ranked = rank_receivers(orphan_df, df_v, st.session_state.get('current_result'), active_reps)
+            selected = []
+            
+            if ranked:
+                st.caption("Ordinati per combinazione distanza / saturazione:")
+                for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked[:5]):
+                    badge = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "•"
+                    st.markdown(
+                        f"{badge} **{rep}** | Sat: {sat:.1f}% | Cap.res: {cap:.1f}% | "
+                        f"Distanza media: {avg_dist:.1f} km"
+                    )
+                
+                suggested = [r[0] for r in ranked[:3]]
+                selected = st.multiselect(
+                    "Seleziona riceventi", active_reps, default=suggested, key="selected_receivers"
+                )
+                
+                if selected:
+                    alloc = preview_allocation(orphan_df, selected, df_v)
+                    st.markdown("**📊 Preview allocazione**")
+                    for r in selected:
+                        n_ass = len(alloc.get(r, []))
+                        if n_ass > 0:
+                            avg_d = np.mean([d for _, d in alloc[r]]) if alloc[r] else 0
+                            st.markdown(f"→ **{r}**: {n_ass} clienti (distanza media: {avg_d:.1f} km)")
+                    
+                    # Stima impatto saturazione
+                    if st.session_state.get('current_result') is not None:
+                        res = st.session_state.current_result
+                        max_ore = ore_effettive_gg * gg_lavoro
+                        abc = st.session_state.abc_vals
+                        for r in selected:
+                            n_ass = len(alloc.get(r, []))
+                            if n_ass > 0 and r in res['sales_rep'].values:
+                                row = res[res['sales_rep'] == r].iloc[0]
+                                # Stima ore aggiuntive
+                                sub_orf = orphan_df.iloc[[i for i, _ in alloc.get(r, [])]]
+                                sub_orf = classify_abc(sub_orf, col_vol, abc['da_a'], abc['da_b'], abc['da_c'])
+                                freq_map = {'A': abc['freq_a'], 'B': abc['freq_b'], 'C': abc['freq_c']}
+                                sub_orf['freq'] = sub_orf['classe'].map(freq_map).fillna(0)
+                                ore_vis_add = (sub_orf['freq'].sum() * dur_visita / 60.0)
+                                avg_d = np.mean([d for _, d in alloc[r]]) if alloc[r] else 0
+                                # Stima viaggio: andata+ritorno * freq / velocità proxy
+                                ore_viag_add = (avg_d * 2.0 * sub_orf['freq'].sum()) / 45.0
+                                sat_add = (ore_vis_add + ore_viag_add) / max_ore * 100 if max_ore > 0 else 0
+                                new_sat = row['saturazione_pct'] + sat_add
+                                color = "green" if new_sat < 85 else "orange" if new_sat < 100 else "red"
+                                st.markdown(
+                                    f"   → Nuova sat. stimata per **{r}**: "
+                                    f"<span style='color:{color}'>{new_sat:.1f}%</span> "
+                                    f"(was {row['saturazione_pct']:.1f}%)",
+                                    unsafe_allow_html=True
+                                )
+            else:
+                st.error("Nessun ricevente disponibile")
+
+        st.divider()
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            if st.button("✅ Conferma Riassegnazione", use_container_width=True, disabled=(not selected)):
+                if selected:
+                    df_new = apply_reassignment(
+                        st.session_state.df_c_working, removed_name, selected, df_v
+                    )
+                    st.session_state.df_c_working = df_new
+                    st.session_state.removed_reps.append(removed_name)
+                    st.session_state.reassignment_history.append({
+                        'removed': removed_name,
+                        'receivers': selected,
+                        'n_clients': n_orfani,
+                        'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
+                    })
+                    st.session_state.pending_removal = None
+                    st.session_state.force_recalc = True
+                    st.session_state.rep_status_prev = {r: rep_status[r] for r in reps}
+                    st.rerun()
+        with col_btn2:
+            if st.button("❌ Annulla Rimozione", use_container_width=True):
+                st.session_state[f"rep_{removed_name}"] = True
+                st.session_state.pending_removal = None
+                st.rerun()
+        
+        st.stop()
 
     # =============================================================================
     # MAIN CONTENT: Matrice ABC
     # =============================================================================
     if uploaded:
-        st.session_state.df_c = df_c
-        st.session_state.col_vol = col_vol
-
         st.divider()
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
         st.caption("Definisci gli intervalli esatti (da/a) e le visite annue per ogni classe.")
 
-        # NUOVI DEFAULT: D=0-100, C=101-400, B=401-800, A=801+
-        # Forza reset matrice se versione cambiata
-        if 'abc_version' not in st.session_state:
-            st.session_state.abc_version = 2
-            st.session_state.abc_vals = None
-
-        if 'abc_vals' not in st.session_state or st.session_state.abc_vals is None:
+        if st.session_state.abc_vals is None:
             st.session_state.abc_vals = {
                 'da_a': 801, 'a_a': -1, 'freq_a': 24,
                 'da_b': 401, 'a_b': 800, 'freq_b': 16,
@@ -513,15 +798,15 @@ def main():
     # =============================================================================
     # LOGICA ESECUZIONE
     # =============================================================================
-    if 'current_result' not in st.session_state: st.session_state.current_result = None
-    if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
-    if 'current_params' not in st.session_state: st.session_state.current_params = {}
-
     run_sim = False
     if st.session_state.get('trigger_auto_run', False):
         st.session_state.trigger_auto_run = False
         run_sim = True
-    if manual_run: run_sim = True
+    if st.session_state.get('force_recalc', False):
+        st.session_state.force_recalc = False
+        run_sim = True
+    if manual_run: 
+        run_sim = True
 
     if run_sim and uploaded:
         with st.spinner("🔄 Calcolo scenario in corso..."):
@@ -536,7 +821,8 @@ def main():
                                                abc['freq_a'], abc['freq_b'], abc['freq_c'],
                                                dur_visita, ore_effettive_gg, gg_lavoro,
                                                max_stops_per_day)
-                    if res is None: st.error(df_w)
+                    if res is None: 
+                        st.error(df_w)
                     else:
                         st.session_state.current_result = res
                         st.session_state.current_df_work = df_w
@@ -633,7 +919,6 @@ def main():
             except:
                 return '', ''
 
-        # Costruisci HTML manualmente per controllo totale
         html_rows = []
         headers = list(disp_fmt.columns)
 
@@ -750,6 +1035,12 @@ def main():
         st.download_button("📥 Scarica Report CSV", csv, f"scenario_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=True)
     else:
         st.info("📂 Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
+
+    # =============================================================================
+    # SALVATAGGIO STATO CHECKBOX PER RILEVAMENTO FUTURO
+    # =============================================================================
+    if uploaded and not st.session_state.get('pending_removal'):
+        st.session_state.rep_status_prev = {r: rep_status[r] for r in reps}
 
 if __name__ == "__main__":
     main()
