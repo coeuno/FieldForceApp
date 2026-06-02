@@ -802,54 +802,61 @@ def main():
         recv_df = pd.DataFrame(recv_data)
 
         # --- CALCOLA SATURAZIONE FUTURA PER TUTTI I RICEVENTI ---
-        future_data = {}
-        for rep in recv_df['_rep']:
-            future_data[rep] = {'add_abc': 0, 'fut_sat': None}
+        # Ottimizzazione: calcola solo se non già in cache
+        cache_key = f"future_data_{removed_name}_{max_km}"
+        if cache_key not in st.session_state:
+            future_data = {}
+            for rep in recv_df['_rep']:
+                future_data[rep] = {'add_abc': 0, 'fut_sat': None}
 
-        abc = st.session_state.abc_vals
-        for rep in recv_df['_rep']:
-            test_receivers = [rep]
-            df_temp = apply_reassignment(
-                st.session_state.df_c_working, removed_name, test_receivers, df_v
-            )
-            temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
-            temp_active = [r for r in temp_active if r != removed_name]
-            temp_active = list(dict.fromkeys(temp_active + test_receivers))
-
-            if len(temp_active) > 0:
-                temp_res, _ = run_simulation(
-                    df_temp, df_v, temp_active, col_vol,
-                    abc['da_a'], abc['da_b'], abc['da_c'],
-                    abc['freq_a'], abc['freq_b'], abc['freq_c'],
-                    dur_visita, ore_effettive_gg, gg_lavoro,
-                    max_stops_per_day
+            abc = st.session_state.abc_vals
+            for rep in recv_df['_rep']:
+                test_receivers = [rep]
+                df_temp = apply_reassignment(
+                    st.session_state.df_c_working, removed_name, test_receivers, df_v
                 )
+                temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
+                temp_active = [r for r in temp_active if r != removed_name]
+                temp_active = list(dict.fromkeys(temp_active + test_receivers))
 
-                if temp_res is not None and rep in temp_res['sales_rep'].values:
-                    fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
-                    future_data[rep]['fut_sat'] = fut_sat
+                if len(temp_active) > 0:
+                    temp_res, _ = run_simulation(
+                        df_temp, df_v, temp_active, col_vol,
+                        abc['da_a'], abc['da_b'], abc['da_c'],
+                        abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                        dur_visita, ore_effettive_gg, gg_lavoro,
+                        max_stops_per_day
+                    )
 
-                    alloc = preview_allocation(orphan_df, test_receivers, st.session_state.df_c_working, df_v)
-                    if rep in alloc and len(alloc[rep]) > 0:
-                        assigned_indices = [i for i, _ in alloc[rep]]
-                        sub_assigned = orphan_df.loc[assigned_indices]
-                        sub_assigned = classify_abc(
-                            sub_assigned, col_vol,
-                            abc['da_a'], abc['da_b'], abc['da_c']
-                        )
-                        add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
-                        future_data[rep]['add_abc'] = add_abc
+                    if temp_res is not None and rep in temp_res['sales_rep'].values:
+                        fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
+                        future_data[rep]['fut_sat'] = fut_sat
 
-        # Funzione per colorare saturazione
-        def color_sat_cell(val):
+                        alloc = preview_allocation(orphan_df, test_receivers, st.session_state.df_c_working, df_v)
+                        if rep in alloc and len(alloc[rep]) > 0:
+                            assigned_indices = [i for i, _ in alloc[rep]]
+                            sub_assigned = orphan_df.loc[assigned_indices]
+                            sub_assigned = classify_abc(
+                                sub_assigned, col_vol,
+                                abc['da_a'], abc['da_b'], abc['da_c']
+                            )
+                            add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
+                            future_data[rep]['add_abc'] = add_abc
+
+            st.session_state[cache_key] = future_data
+        else:
+            future_data = st.session_state[cache_key]
+
+        # Funzione per colorare saturazione con emoji (NO HTML per st.data_editor)
+        def sat_emoji(val):
             if val is None or pd.isna(val):
                 return "—"
             try:
                 v = float(val)
-                if v > 110: return f"<span style='color:#ff4444;font-weight:bold'>{v:.1f}% 🔴</span>"
-                elif v > 100: return f"<span style='color:#ff8800;font-weight:bold'>{v:.1f}% 🟠</span>"
-                elif v > 85: return f"<span style='color:#ffcc00;font-weight:bold'>{v:.1f}% 🟡</span>"
-                else: return f"<span style='color:#44ff44;font-weight:bold'>{v:.1f}% 🟢</span>"
+                if v > 110: return f"{v:.1f}% 🔴"
+                elif v > 100: return f"{v:.1f}% 🟠"
+                elif v > 85: return f"{v:.1f}% 🟡"
+                else: return f"{v:.1f}% 🟢"
             except:
                 return str(val)
 
@@ -858,10 +865,10 @@ def main():
             'Seleziona': recv_df['_selected'].tolist(),
             'Ricevente': recv_df['_rep'].tolist(),
             'Clienti A-B-C attuali': recv_df['_current_abc'].tolist(),
-            'Sat. Attuale': [color_sat_cell(s) for s in recv_df['_sat']],
+            'Sat. Attuale': [sat_emoji(s) for s in recv_df['_sat']],
             'Distanza media (km) nuovi clienti': [f"{d:.1f}" for d in recv_df['_avg_dist']],
             'Clienti A-B-C aggiuntivi': [future_data[r]['add_abc'] for r in recv_df['_rep']],
-            'Sat. Futura': [color_sat_cell(future_data[r]['fut_sat']) for r in recv_df['_rep']]
+            'Sat. Futura': [sat_emoji(future_data[r]['fut_sat']) for r in recv_df['_rep']]
         })
 
         edited = st.data_editor(
@@ -885,7 +892,7 @@ def main():
                       "Distanza media (km) nuovi clienti", "Clienti A-B-C aggiuntivi", "Sat. Futura"],
             hide_index=True,
             use_container_width=True,
-            key="recv_editor_v6"
+            key="recv_editor_v7"
         )
 
         selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
