@@ -614,17 +614,20 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
 
     df_v_active = df_v[df_v['sales rep'].isin(active_reps)].dropna(subset=['latitudine', 'longitudine'])
     if len(df_v_active) > 0:
+        # Alone bianco per contrasto
         fig.add_trace(go.Scattermapbox(
             lat=df_v_active['latitudine'],
             lon=df_v_active['longitudine'],
             mode='markers',
-            marker=dict(
-                size=18,
-                symbol='home',
-                color='#E63946',
-                opacity=1.0,
-                line=dict(color='white', width=2.5)
-            ),
+            marker=dict(size=26, color='white', opacity=0.9),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        fig.add_trace(go.Scattermapbox(
+            lat=df_v_active['latitudine'],
+            lon=df_v_active['longitudine'],
+            mode='markers',
+            marker=dict(size=18, color='#E63946', opacity=1.0),
             text=df_v_active['sales rep'].values,
             name='🏠 Home Base',
             hoverinfo='name+text'
@@ -660,20 +663,23 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
     map_colors = _map_layout_colors()
     fig = go.Figure()
 
-    # Home base venditore rimosso (croce rossa)
+    # Home base venditore rimosso (croce rossa con alone)
     removed_home = df_v[df_v['sales rep'] == removed_rep].dropna(subset=['latitudine', 'longitudine'])
     if len(removed_home) > 0:
+        lat_rh = removed_home['latitudine'].tolist()
+        lon_rh = removed_home['longitudine'].tolist()
+        # Alone bianco
         fig.add_trace(go.Scattermapbox(
-            lat=removed_home['latitudine'].tolist(),
-            lon=removed_home['longitudine'].tolist(),
+            lat=lat_rh, lon=lon_rh,
             mode='markers',
-            marker=dict(
-                size=22,
-                symbol='cross',
-                color='#D00000',
-                opacity=1.0,
-                line=dict(color='white', width=2.5)
-            ),
+            marker=dict(size=30, color='white', opacity=0.9),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        fig.add_trace(go.Scattermapbox(
+            lat=lat_rh, lon=lon_rh,
+            mode='markers',
+            marker=dict(size=22, color='#D00000', opacity=1.0),
             name=f'❌ {removed_rep} (rimosso)'
         ))
 
@@ -686,18 +692,18 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
         recv_lat = recv_home.iloc[0]['latitudine']
         recv_lon = recv_home.iloc[0]['longitudine']
 
-        # Home base ricevente
+        # Home base ricevente - alone bianco
         fig.add_trace(go.Scattermapbox(
-            lat=[recv_lat],
-            lon=[recv_lon],
+            lat=[recv_lat], lon=[recv_lon],
             mode='markers',
-            marker=dict(
-                size=18,
-                symbol='home',
-                color=color,
-                opacity=1.0,
-                line=dict(color='white', width=2.5)
-            ),
+            marker=dict(size=26, color='white', opacity=0.9),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        fig.add_trace(go.Scattermapbox(
+            lat=[recv_lat], lon=[recv_lon],
+            mode='markers',
+            marker=dict(size=18, color=color, opacity=1.0),
             name=f'🏠 {receiver}'
         ))
 
@@ -1647,17 +1653,20 @@ def main():
                 subset=['latitudine', 'longitudine']
             )
             if len(df_v_active) > 0:
+                # Alone bianco per contrasto
                 fig.add_trace(go.Scattermapbox(
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
                     mode='markers',
-                    marker=dict(
-                        size=18,
-                        symbol='home',
-                        color='#E63946',
-                        opacity=1.0,
-                        line=dict(color='white', width=2.5)
-                    ),
+                    marker=dict(size=26, color='white', opacity=0.9),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+                fig.add_trace(go.Scattermapbox(
+                    lat=df_v_active['latitudine'],
+                    lon=df_v_active['longitudine'],
+                    mode='markers',
+                    marker=dict(size=18, color='#E63946', opacity=1.0),
                     text=df_v_active['sales rep'].values,
                     name='🏠 Home Base',
                     hoverinfo='name+text'
