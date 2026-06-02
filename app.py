@@ -755,6 +755,23 @@ def main():
             st.stop()
 
         # --- TABELLA RICEVENTI UNIFICATA CON SATURAZIONE FUTURA ---
+        # CSS per checkbox rosse (stile sidebar)
+        st.markdown("""
+        <style>
+        [data-testid="stCheckbox"] > label > div[role="checkbox"] {
+            background-color: #ff4444 !important;
+            border-color: #ff4444 !important;
+        }
+        [data-testid="stCheckbox"] > label > div[role="checkbox"][aria-checked="true"] {
+            background-color: #ff4444 !important;
+            border-color: #ff4444 !important;
+        }
+        [data-testid="stCheckbox"] > label > div[role="checkbox"] > div {
+            background-color: #ff4444 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
         # Prepara dati riceventi
         recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
@@ -816,7 +833,7 @@ def main():
                       "Distanza media (km) nuovi clienti", "Clienti A-B-C aggiuntivi", "Sat. Futura"],
             hide_index=True,
             use_container_width=True,
-            key="recv_editor_v4"
+            key="recv_editor_v5"
         )
 
         selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
@@ -876,7 +893,7 @@ def main():
             except:
                 return str(val)
 
-        # Ricostruisci tabella HTML con dati aggiornati
+        # Ricostruisci tabella HTML con dati aggiornati (UNICA TABELLA)
         recv_headers = ['Seleziona', 'Ricevente', 'Clienti A-B-C attuali', 'Sat. Attuale', 
                         'Distanza media (km) nuovi clienti', 'Clienti A-B-C aggiuntivi', 'Sat. Futura']
         recv_rows = []
