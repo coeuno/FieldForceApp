@@ -538,6 +538,20 @@ def render_html_table(headers, rows, font_size="12px"):
 # =============================================================================
 # NUOVE FUNZIONI: MAPPE & EXPORT
 # =============================================================================
+
+# Config Plotly per download PNG nativo dal browser (funziona SEMPRE)
+PLOTLY_EXPORT_CONFIG = {
+    'toImageButtonOptions': {
+        'format': 'png',
+        'filename': 'mappa',
+        'height': 1000,
+        'width': 1600,
+        'scale': 2
+    },
+    'displayModeBar': True,
+    'displaylogo': False
+}
+
 def build_territory_map(df_work, df_v, active_reps, title=""):
     """Genera la mappa territori Plotly (ConvexHull + scatter clienti + home base)."""
     df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
@@ -697,11 +711,20 @@ def fig_to_png(fig):
     """Converte figura Plotly in bytes PNG. Richiede kaleido."""
     try:
         import plotly.io as pio
+        # Test se kaleido è davvero disponibile
+        pio.to_image(go.Figure(), format='png')
         img_bytes = pio.to_image(fig, format="png", width=1600, height=1000, scale=2)
         return img_bytes
-    except Exception as e:
-        st.warning(f"⚠️ Export PNG fallito (serve `pip install kaleido`): {e}")
+    except Exception:
         return None
+
+
+def fig_to_html_bytes(fig):
+    """Converte figura Plotly in bytes HTML interattivo (fallback senza kaleido)."""
+    buffer = BytesIO()
+    fig.write_html(buffer, include_plotlyjs='cdn')
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def generate_excel_report(initial_result, final_result, reassignment_history, removal_details, col_vol):
@@ -826,6 +849,16 @@ def main():
     if 'removal_figures' not in st.session_state: st.session_state.removal_figures = {}
     if 'removal_details' not in st.session_state: st.session_state.removal_details = {}
     if 'final_fig' not in st.session_state: st.session_state.final_fig = None
+
+    # --- RILEVAMENTO KALEIDO ---
+    KALEIDO_AVAILABLE = False
+    try:
+        import plotly.io as pio
+        pio.to_image(go.Figure(), format='png')
+        KALEIDO_AVAILABLE = True
+    except Exception:
+        KALEIDO_AVAILABLE = False
+    st.session_state['kaleido_available'] = KALEIDO_AVAILABLE
 
     st.markdown("""
     <style>
@@ -1587,34 +1620,56 @@ def main():
                     borderwidth=1
                 )
             )
-            st.plotly_chart(fig, use_container_width=True)
+            # --- NUOVO: config per export PNG nativo dal browser ---
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_EXPORT_CONFIG)
 
         # =============================================================================
         # NUOVO: EXPORT AVANZATO & REPORTISTICA
         # =============================================================================
         st.divider()
         st.subheader("📦 Export Avanzato & Reportistica")
+        
+        kaleido_ok = st.session_state.get('kaleido_available', False)
+        if not kaleido_ok:
+            st.info("ℹ️ **Kaleido non rilevato**: l'export PNG automatico è disabilitato. "
+                    "Puoi comunque scaricare PNG cliccando il pulsante 📷 nella barra degli strumenti di ogni mappa. "
+                    "I bottoni qui sotto genereranno file HTML interattivi come fallback.")
 
         col_ex1, col_ex2, col_ex3 = st.columns(3)
 
         with col_ex1:
             if st.session_state.initial_fig is not None:
-                if st.button("📸 Scarica Mappa Iniziale PNG", use_container_width=True):
-                    img = fig_to_png(st.session_state.initial_fig)
-                    if img:
-                        st.download_button("⬇️ Download PNG", img, "mappa_status_quo_iniziale.png", "image/png", use_container_width=True)
+                if kaleido_ok:
+                    if st.button("📸 Scarica Mappa Iniziale PNG", use_container_width=True):
+                        img = fig_to_png(st.session_state.initial_fig)
+                        if img:
+                            st.download_button("⬇️ Download PNG", img, "mappa_status_quo_iniziale.png", "image/png", use_container_width=True)
+                else:
+                    if st.button("📄 Scarica Mappa Iniziale HTML", use_container_width=True):
+                        html_bytes = fig_to_html_bytes(st.session_state.initial_fig)
+                        st.download_button("⬇️ Download HTML", html_bytes, "mappa_status_quo_iniziale.html", "text/html", use_container_width=True)
 
         with col_ex2:
             if st.session_state.removal_figures:
-                if st.button("📸 Scarica Mappe Riassegnazioni PNG", use_container_width=True):
-                    zip_buffer = BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for rep_name, fig in st.session_state.removal_figures.items():
-                            img = fig_to_png(fig)
-                            if img:
-                                zf.writestr(f"riassegnazione_{rep_name}.png", img)
-                    zip_buffer.seek(0)
-                    st.download_button("⬇️ Download ZIP Mappe", zip_buffer.getvalue(), "mappe_riassegnazioni.zip", "application/zip", use_container_width=True)
+                if kaleido_ok:
+                    if st.button("📸 Scarica Mappe Riassegnazioni PNG", use_container_width=True):
+                        zip_buffer = BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for rep_name, fig in st.session_state.removal_figures.items():
+                                img = fig_to_png(fig)
+                                if img:
+                                    zf.writestr(f"riassegnazione_{rep_name}.png", img)
+                        zip_buffer.seek(0)
+                        st.download_button("⬇️ Download ZIP Mappe", zip_buffer.getvalue(), "mappe_riassegnazioni.zip", "application/zip", use_container_width=True)
+                else:
+                    if st.button("📄 Scarica Mappe Riassegnazioni HTML", use_container_width=True):
+                        zip_buffer = BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for rep_name, fig in st.session_state.removal_figures.items():
+                                html_bytes = fig_to_html_bytes(fig)
+                                zf.writestr(f"riassegnazione_{rep_name}.html", html_bytes)
+                        zip_buffer.seek(0)
+                        st.download_button("⬇️ Download ZIP HTML", zip_buffer.getvalue(), "mappe_riassegnazioni_html.zip", "application/zip", use_container_width=True)
 
         with col_ex3:
             if st.button("🏁 Status Quo Finale + Export Excel", use_container_width=True, type="primary"):
@@ -1643,10 +1698,13 @@ def main():
                                         f"downsizing_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                         use_container_width=True)
-                        # Offri anche mappa finale
-                        img_final = fig_to_png(final_fig)
-                        if img_final:
-                            st.download_button("📥 Scarica Mappa Finale PNG", img_final, "mappa_status_quo_finale.png", "image/png", use_container_width=True)
+                        if kaleido_ok:
+                            img_final = fig_to_png(final_fig)
+                            if img_final:
+                                st.download_button("📥 Scarica Mappa Finale PNG", img_final, "mappa_status_quo_finale.png", "image/png", use_container_width=True)
+                        else:
+                            html_final = fig_to_html_bytes(final_fig)
+                            st.download_button("📥 Scarica Mappa Finale HTML", html_final, "mappa_status_quo_finale.html", "text/html", use_container_width=True)
                     else:
                         st.error("❌ Errore generazione Excel")
 
