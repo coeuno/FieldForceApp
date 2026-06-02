@@ -86,6 +86,29 @@ PROVINCIAL_SPEED = {
 }
 
 # =============================================================================
+# STILE MAPPA & COLORI LAYOUT
+# =============================================================================
+# open-street-map  → confini regionali/provinciali ben visibili, colori reali (DEFAULT)
+# carto-darkmatter → dark mode, massimo contrasto per i dati sovrapposti
+MAPBOX_STYLE = "open-street-map"
+
+def _map_layout_colors():
+    """Restituisce colori di layout coerenti con lo stile mappa scelto."""
+    if 'dark' in MAPBOX_STYLE:
+        return {
+            'paper_bg': '#1a1a1a',
+            'plot_bg': '#1a1a1a',
+            'font_color': '#ffffff',
+            'legend_bg': 'rgba(30,30,30,0.85)'
+        }
+    return {
+        'paper_bg': 'white',
+        'plot_bg': 'white',
+        'font_color': '#333333',
+        'legend_bg': 'rgba(255,255,255,0.95)'
+    }
+
+# =============================================================================
 # FUNZIONI CORE
 # =============================================================================
 def haversine_km(lon1, lat1, lon2, lat2):
@@ -554,13 +577,14 @@ PLOTLY_EXPORT_CONFIG = {
 
 def build_territory_map(df_work, df_v, active_reps, title=""):
     """Genera la mappa territori Plotly (ConvexHull + scatter clienti + home base)."""
+    map_colors = _map_layout_colors()
     df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
     fig = go.Figure()
     if len(df_map) == 0:
         return fig
 
-    colors = px.colors.qualitative.Alphabet
-    rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(active_reps)}
+    palette = px.colors.qualitative.Alphabet
+    rep_colors = {r: palette[i % len(palette)] for i, r in enumerate(active_reps)}
 
     for rep in active_reps:
         sub = df_map[df_map['assigned_rep'] == rep]
@@ -594,27 +618,38 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
             lat=df_v_active['latitudine'],
             lon=df_v_active['longitudine'],
             mode='markers',
-            marker=dict(size=14, color='black', opacity=0.9),
+            marker=dict(
+                size=18,
+                symbol='home',
+                color='#E63946',
+                opacity=1.0,
+                line=dict(color='white', width=2.5)
+            ),
+            text=df_v_active['sales rep'].values,
             name='🏠 Home Base',
-            hoverinfo='name'
+            hoverinfo='name+text'
         ))
 
     fig.update_layout(
-        mapbox_style="carto-positron",
+        mapbox_style=MAPBOX_STYLE,
         mapbox_zoom=5.5,
         mapbox_center=dict(lat=42.5, lon=12.5),
         margin=dict(r=0, t=30, l=0, b=120),
-        height=650,
+        height=700,
         title=title,
+        paper_bgcolor=map_colors['paper_bg'],
+        plot_bgcolor=map_colors['plot_bg'],
+        font=dict(color=map_colors['font_color']),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.15,
+            y=-0.18,
             xanchor="center",
             x=0.5,
-            bgcolor='rgba(255,255,255,0.95)',
+            bgcolor=map_colors['legend_bg'],
             bordercolor='gray',
-            borderwidth=1
+            borderwidth=1,
+            font=dict(size=11)
         )
     )
     return fig
@@ -622,22 +657,29 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
 
 def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title=""):
     """Mappa di riassegnazione con frecce cliente → ricevente e home base venditore rimosso."""
+    map_colors = _map_layout_colors()
     fig = go.Figure()
 
-    # Home base venditore rimosso (X nera)
+    # Home base venditore rimosso (croce rossa)
     removed_home = df_v[df_v['sales rep'] == removed_rep].dropna(subset=['latitudine', 'longitudine'])
     if len(removed_home) > 0:
         fig.add_trace(go.Scattermapbox(
             lat=removed_home['latitudine'].tolist(),
             lon=removed_home['longitudine'].tolist(),
             mode='markers',
-            marker=dict(size=20, color='black', symbol='x', opacity=0.9),
+            marker=dict(
+                size=22,
+                symbol='cross',
+                color='#D00000',
+                opacity=1.0,
+                line=dict(color='white', width=2.5)
+            ),
             name=f'❌ {removed_rep} (rimosso)'
         ))
 
-    colors = px.colors.qualitative.Bold
+    palette = px.colors.qualitative.Bold
     for i, receiver in enumerate(receivers):
-        color = colors[i % len(colors)]
+        color = palette[i % len(palette)]
         recv_home = df_v[df_v['sales rep'] == receiver].dropna(subset=['latitudine', 'longitudine'])
         if len(recv_home) == 0:
             continue
@@ -649,7 +691,13 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
             lat=[recv_lat],
             lon=[recv_lon],
             mode='markers',
-            marker=dict(size=14, color=color, opacity=0.9),
+            marker=dict(
+                size=18,
+                symbol='home',
+                color=color,
+                opacity=1.0,
+                line=dict(color='white', width=2.5)
+            ),
             name=f'🏠 {receiver}'
         ))
 
@@ -687,19 +735,22 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
             ))
 
     fig.update_layout(
-        mapbox_style="carto-positron",
+        mapbox_style=MAPBOX_STYLE,
         mapbox_zoom=5.5,
         mapbox_center=dict(lat=42.5, lon=12.5),
         margin=dict(r=0, t=40, l=0, b=120),
         height=700,
         title=title or f"Riassegnazione: {removed_rep}",
+        paper_bgcolor=map_colors['paper_bg'],
+        plot_bgcolor=map_colors['plot_bg'],
+        font=dict(color=map_colors['font_color']),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.15,
+            y=-0.18,
             xanchor="center",
             x=0.5,
-            bgcolor='rgba(255,255,255,0.95)',
+            bgcolor=map_colors['legend_bg'],
             bordercolor='gray',
             borderwidth=1
         )
@@ -1565,8 +1616,9 @@ def main():
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
             fig = go.Figure()
-            colors = px.colors.qualitative.Alphabet
-            rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(params['active_list'])}
+            map_colors = _map_layout_colors()
+            palette = px.colors.qualitative.Alphabet
+            rep_colors = {r: palette[i % len(palette)] for i, r in enumerate(params['active_list'])}
             for rep in params['active_list']:
                 sub = df_map[df_map['assigned_rep'] == rep]
                 if len(sub) >= 3:
@@ -1599,28 +1651,38 @@ def main():
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
                     mode='markers',
-                    marker=dict(size=14, color='black', opacity=0.9),
+                    marker=dict(
+                        size=18,
+                        symbol='home',
+                        color='#E63946',
+                        opacity=1.0,
+                        line=dict(color='white', width=2.5)
+                    ),
+                    text=df_v_active['sales rep'].values,
                     name='🏠 Home Base',
-                    hoverinfo='name'
+                    hoverinfo='name+text'
                 ))
             fig.update_layout(
-                mapbox_style="carto-positron",
+                mapbox_style=MAPBOX_STYLE,
                 mapbox_zoom=5.5,
                 mapbox_center=dict(lat=42.5, lon=12.5),
                 margin=dict(r=0, t=30, l=0, b=120),
-                height=650,
+                height=700,
+                paper_bgcolor=map_colors['paper_bg'],
+                plot_bgcolor=map_colors['plot_bg'],
+                font=dict(color=map_colors['font_color']),
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
-                    y=-0.15,
+                    y=-0.18,
                     xanchor="center",
                     x=0.5,
-                    bgcolor='rgba(255,255,255,0.95)',
+                    bgcolor=map_colors['legend_bg'],
                     bordercolor='gray',
-                    borderwidth=1
+                    borderwidth=1,
+                    font=dict(size=11)
                 )
             )
-            # --- NUOVO: config per export PNG nativo dal browser ---
             st.plotly_chart(fig, use_container_width=True, config=PLOTLY_EXPORT_CONFIG)
 
         # =============================================================================
