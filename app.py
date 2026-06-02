@@ -32,6 +32,18 @@ def get_alert(s):
     elif s > 85: return "⚠️ ATTENZIONE"
     else: return "🟢 OK"
 
+def sat_emoji(val):
+    if val is None or pd.isna(val):
+        return "—"
+    try:
+        v = float(val)
+        if v > 110: return f"{v:.1f}% 🔴"
+        elif v > 100: return f"{v:.1f}% 🟠"
+        elif v > 85: return f"{v:.1f}% 🟡"
+        else: return f"{v:.1f}% 🟢"
+    except:
+        return str(val)
+
 # =============================================================================
 # CONFIGURAZIONE
 # =============================================================================
@@ -373,14 +385,11 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
             continue
 
         # --- CENTROIDE DEL BACINO ESISTENTE ---
-        # Trova i clienti che questo ricevente già visita nel working set attuale
         rep_clients = df_c[df_c['sales rep'] == rep].dropna(subset=['latitudine', 'longitudine'])
         if len(rep_clients) > 0:
-            # Centroide = media lat/lon dei clienti esistenti
             centroid_lat = rep_clients['latitudine'].mean()
             centroid_lon = rep_clients['longitudine'].mean()
         else:
-            # Fallback: usa casa base del venditore se non ha clienti
             rep_row = rep_rows.iloc[0]
             centroid_lat = rep_row['latitudine']
             centroid_lon = rep_row['longitudine']
@@ -517,7 +526,7 @@ def render_html_table(headers, rows, font_size="12px"):
             for cell in row
         ])
         rows_html += f'<tr>{cells}</tr>'
-    
+
     return (
         f'<table style="border-collapse:collapse;width:100%;margin:8px 0;">'
         f'<thead><tr>{header_html}</tr></thead>'
@@ -613,13 +622,13 @@ def main():
         if 'sales rep' not in df_c.columns:
             st.error("❌ Colonna 'sales rep' mancante nel foglio clienti.")
             return
-        
+
         # Inizializza working set se necessario
         if st.session_state.df_c_original is None:
             st.session_state.df_c_original = df_c.copy()
         if st.session_state.df_c_working is None:
             st.session_state.df_c_working = df_c.copy()
-        
+
         st.success(f"✅ {len(df_c):,} clienti, {len(df_v):,} venditori caricati")
         clienti_con_rep = st.session_state.df_c_working['sales rep'].notna().sum()
         st.caption(f"📍 {clienti_con_rep:,} clienti hanno un sales rep assegnato")
@@ -754,7 +763,6 @@ def main():
             st.warning(f"Nessun ricevente entro {max_km} km. Prova ad aumentare la distanza massima.")
             st.stop()
 
-        # --- TABELLA RICEVENTI UNIFICATA CON SATURAZIONE FUTURA ---
         # CSS per checkbox rosse (stile sidebar)
         st.markdown("""
         <style>
@@ -772,7 +780,7 @@ def main():
         </style>
         """, unsafe_allow_html=True)
 
-        # Prepara dati riceventi
+        # Prepara dati riceventi base (senza saturazione futura precalcolata)
         recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
             is_suggested = i < 3
@@ -790,89 +798,18 @@ def main():
             current_abc = int((rep_current_clients['classe'].isin(['A','B','C'])).sum())
 
             recv_data.append({
-                '_rep': rep,
-                '_score': score,
-                '_sat': sat,
-                '_avg_dist': avg_dist,
-                '_cap': cap,
-                '_current_abc': current_abc,
-                '_selected': is_suggested
+                'Seleziona': is_suggested,
+                'Ricevente': rep,
+                'Clienti A-B-C attuali': current_abc,
+                'Sat. Attuale': sat_emoji(sat),
+                'Distanza media (km) nuovi clienti': f"{avg_dist:.1f}",
+                'Clienti A-B-C aggiuntivi': '—',
+                'Sat. Futura': '—'
             })
 
-        recv_df = pd.DataFrame(recv_data)
-
-        # --- CALCOLA SATURAZIONE FUTURA PER TUTTI I RICEVENTI ---
-        # Ottimizzazione: calcola solo se non già in cache
-        cache_key = f"future_data_{removed_name}_{max_km}"
-        if cache_key not in st.session_state:
-            future_data = {}
-            for rep in recv_df['_rep']:
-                future_data[rep] = {'add_abc': 0, 'fut_sat': None}
-
-            abc = st.session_state.abc_vals
-            for rep in recv_df['_rep']:
-                test_receivers = [rep]
-                df_temp = apply_reassignment(
-                    st.session_state.df_c_working, removed_name, test_receivers, df_v
-                )
-                temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
-                temp_active = [r for r in temp_active if r != removed_name]
-                temp_active = list(dict.fromkeys(temp_active + test_receivers))
-
-                if len(temp_active) > 0:
-                    temp_res, _ = run_simulation(
-                        df_temp, df_v, temp_active, col_vol,
-                        abc['da_a'], abc['da_b'], abc['da_c'],
-                        abc['freq_a'], abc['freq_b'], abc['freq_c'],
-                        dur_visita, ore_effettive_gg, gg_lavoro,
-                        max_stops_per_day
-                    )
-
-                    if temp_res is not None and rep in temp_res['sales_rep'].values:
-                        fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
-                        future_data[rep]['fut_sat'] = fut_sat
-
-                        alloc = preview_allocation(orphan_df, test_receivers, st.session_state.df_c_working, df_v)
-                        if rep in alloc and len(alloc[rep]) > 0:
-                            assigned_indices = [i for i, _ in alloc[rep]]
-                            sub_assigned = orphan_df.loc[assigned_indices]
-                            sub_assigned = classify_abc(
-                                sub_assigned, col_vol,
-                                abc['da_a'], abc['da_b'], abc['da_c']
-                            )
-                            add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
-                            future_data[rep]['add_abc'] = add_abc
-
-            st.session_state[cache_key] = future_data
-        else:
-            future_data = st.session_state[cache_key]
-
-        # Funzione per colorare saturazione con emoji (NO HTML per st.data_editor)
-        def sat_emoji(val):
-            if val is None or pd.isna(val):
-                return "—"
-            try:
-                v = float(val)
-                if v > 110: return f"{v:.1f}% 🔴"
-                elif v > 100: return f"{v:.1f}% 🟠"
-                elif v > 85: return f"{v:.1f}% 🟡"
-                else: return f"{v:.1f}% 🟢"
-            except:
-                return str(val)
-
-        # --- CHECKBOX INTERATTIVE NELLA TABELLA (st.data_editor) ---
-        display_df = pd.DataFrame({
-            'Seleziona': recv_df['_selected'].tolist(),
-            'Ricevente': recv_df['_rep'].tolist(),
-            'Clienti A-B-C attuali': recv_df['_current_abc'].tolist(),
-            'Sat. Attuale': [sat_emoji(s) for s in recv_df['_sat']],
-            'Distanza media (km) nuovi clienti': [f"{d:.1f}" for d in recv_df['_avg_dist']],
-            'Clienti A-B-C aggiuntivi': [future_data[r]['add_abc'] for r in recv_df['_rep']],
-            'Sat. Futura': [sat_emoji(future_data[r]['fut_sat']) for r in recv_df['_rep']]
-        })
-
+        editor_key = f"recv_editor_{removed_name}"
         edited = st.data_editor(
-            display_df,
+            pd.DataFrame(recv_data),
             column_config={
                 "Seleziona": st.column_config.CheckboxColumn(
                     "Seleziona",
@@ -885,23 +822,107 @@ def main():
                 "Distanza media (km) nuovi clienti": st.column_config.TextColumn(
                     "Distanza media (km) nuovi clienti", disabled=True
                 ),
-                "Clienti A-B-C aggiuntivi": st.column_config.NumberColumn("Clienti A-B-C aggiuntivi", disabled=True),
+                "Clienti A-B-C aggiuntivi": st.column_config.TextColumn("Clienti A-B-C aggiuntivi", disabled=True),
                 "Sat. Futura": st.column_config.TextColumn("Sat. Futura", disabled=True),
             },
             disabled=["Ricevente", "Clienti A-B-C attuali", "Sat. Attuale", 
                       "Distanza media (km) nuovi clienti", "Clienti A-B-C aggiuntivi", "Sat. Futura"],
             hide_index=True,
             use_container_width=True,
-            key="recv_editor_v7"
+            key=editor_key
         )
 
         selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
 
-        if selected_receivers:
-            st.caption("La saturazione futura è calcolata con il modello completo (viaggio reale + visite reali).")
+        # --- BOTTONE CALCOLO SATURAZIONE FUTURA ---
+        calc_col1, calc_col2 = st.columns([1, 3])
+        with calc_col1:
+            calc_pressed = st.button(
+                "🔄 Calcola Impatto", 
+                use_container_width=True, 
+                disabled=(not selected_receivers),
+                key=f"btn_calc_{removed_name}"
+            )
+
+        if calc_pressed and selected_receivers:
+            with st.spinner("Calcolo scenario in corso... (può richiedere qualche secondo)"):
+                abc = st.session_state.abc_vals
+
+                # 1. Applica riassegnazione temporanea con SOLO i riceventi selezionati
+                df_temp = apply_reassignment(
+                    st.session_state.df_c_working, removed_name, selected_receivers, df_v
+                )
+
+                # 2. Tutti i venditori attivi dalla sidebar (inclusi i riceventi selezionati)
+                temp_active = [r for r in reps if r not in st.session_state.removed_reps and rep_status.get(r, True)]
+
+                # 3. Simulazione completa UNA SOLA VOLTA
+                temp_res, _ = run_simulation(
+                    df_temp, df_v, temp_active, col_vol,
+                    abc['da_a'], abc['da_b'], abc['da_c'],
+                    abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                    dur_visita, ore_effettive_gg, gg_lavoro,
+                    max_stops_per_day
+                )
+
+                # 4. Calcola allocazione per contare clienti aggiuntivi per ogni ricevente
+                alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
+
+                # 5. Estrai risultati per ogni ricevente selezionato
+                future_results = {}
+                for rep in selected_receivers:
+                    fut_sat = None
+                    if temp_res is not None and rep in temp_res['sales_rep'].values:
+                        fut_sat = float(temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0])
+
+                    add_abc = 0
+                    if rep in alloc and len(alloc[rep]) > 0:
+                        assigned_indices = [i for i, _ in alloc[rep]]
+                        sub_assigned = orphan_df.loc[assigned_indices]
+                        sub_assigned = classify_abc(
+                            sub_assigned, col_vol,
+                            abc['da_a'], abc['da_b'], abc['da_c']
+                        )
+                        add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
+
+                    future_results[rep] = {
+                        'fut_sat': fut_sat,
+                        'add_abc': add_abc
+                    }
+
+                # Salva in session state per visualizzazione
+                st.session_state[f"future_results_{removed_name}"] = future_results
+                st.session_state[f"last_selected_{removed_name}"] = sorted(selected_receivers)
+            st.rerun()
+
+        # --- MOSTRA RISULTATI CALCOLATI ---
+        future_results = st.session_state.get(f"future_results_{removed_name}", {})
+        last_selected = st.session_state.get(f"last_selected_{removed_name}", [])
+
+        if future_results and sorted(selected_receivers) == last_selected:
+            result_rows = []
+            for _, row in edited.iterrows():
+                rep = row['Ricevente']
+                if row['Seleziona'] and rep in future_results:
+                    row_dict = row.to_dict()
+                    row_dict['Clienti A-B-C aggiuntivi'] = future_results[rep]['add_abc']
+                    row_dict['Sat. Futura'] = sat_emoji(future_results[rep]['fut_sat'])
+                    result_rows.append(row_dict)
+                else:
+                    result_rows.append(row.to_dict())
+
+            if result_rows:
+                st.markdown("#### 📊 Impatto Simulato (basato sui riceventi selezionati)")
+                result_df = pd.DataFrame(result_rows)
+                result_df = result_df[['Seleziona', 'Ricevente', 'Clienti A-B-C attuali', 
+                                        'Sat. Attuale', 'Distanza media (km) nuovi clienti',
+                                        'Clienti A-B-C aggiuntivi', 'Sat. Futura']]
+                st.dataframe(result_df, use_container_width=True, hide_index=True)
+                st.caption("La saturazione futura è calcolata riassegnando gli orfani ai soli venditori selezionati e simulando il carico completo.")
+        elif future_results and sorted(selected_receivers) != last_selected:
+            st.warning("⚠️ La selezione è cambiata rispetto all'ultimo calcolo. Clicca '🔄 Calcola Impatto' per aggiornare.")
 
         st.divider()
-
         st.markdown("### 📊 Preview allocazione clienti")
 
         if not selected_receivers:
@@ -953,6 +974,9 @@ def main():
                         'n_clients': n_orfani,
                         'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
                     })
+                    # Pulisci cache riassegnazione
+                    st.session_state.pop(f"future_results_{removed_name}", None)
+                    st.session_state.pop(f"last_selected_{removed_name}", None)
                     st.session_state.pending_removal = None
                     st.session_state.force_recalc = True
                     st.session_state.rep_status_prev = {r: rep_status[r] for r in reps}
@@ -1090,10 +1114,10 @@ def main():
         with col4:
             overload = len(res[res['saturazione_pct'] > 100])
             st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
-        
+
         min_vol_display = st.session_state.get('min_vol', 0)
         st.info(f"📍 Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(min_vol_display)}**")
-        
+
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
 
