@@ -723,8 +723,8 @@ def main():
 
         st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
 
-        # Tabella orizzontale: colonne = classi, righe = metriche
-        orphan_headers = ['Metrica', 'Cliente A', 'Cliente B', 'Cliente C', 'Cliente D', 'Totali']
+        # Tabella orizzontale: colonne = classi con emoji colorati, righe = metriche
+        orphan_headers = ['Metrica', '🟢 Cliente A', '🟡 Cliente B', '🔴 Cliente C', '⚫ Cliente D', '🔵 Totali']
         orphan_rows = [
             ['N. clienti', str(n_a), str(n_b), str(n_c), str(n_d), f'**{n_orfani}**'],
             ['Volume', fmt_eu(vol_a), fmt_eu(vol_b), fmt_eu(vol_c), fmt_eu(vol_d), 
@@ -734,7 +734,6 @@ def main():
 
         st.divider()
 
-        # --- FILTRO KM E TABELLA RICEVENTI ---
         st.markdown("### 🎯 Seleziona i riceventi")
 
         active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
@@ -756,6 +755,7 @@ def main():
             st.stop()
 
         # --- TABELLA RICEVENTI CON DATA_EDITOR ---
+        # --- TABELLA RICEVENTI UNIFICATA CON SATURAZIONE FUTURA ---
         # Prepara DataFrame per data_editor con colonna checkbox
         recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
@@ -763,9 +763,9 @@ def main():
             recv_data.append({
                 'Seleziona': is_suggested,
                 'Ricevente': rep,
-                'Sat. Attuale': f"{sat:.1f}%",
+                'Sat. Attuale': sat,
                 'Distanza media (km)': f"{avg_dist:.1f}",
-                'Cap. Residua': f"{cap:.1f}%",
+                'Sat. Futura Calcolata': None,  # Populated dynamically
                 '_score': score,
                 '_sat': sat,
                 '_avg_dist': avg_dist,
@@ -774,56 +774,20 @@ def main():
 
         recv_df = pd.DataFrame(recv_data)
 
-        # Usa st.data_editor per selezione interattiva
-        edited_recv = st.data_editor(
-            recv_df,
-            column_config={
-                "Seleziona": st.column_config.CheckboxColumn(
-                    "Seleziona",
-                    help="Spunta per selezionare questo ricevente",
-                    default=False,
-                ),
-                "Ricevente": st.column_config.TextColumn("Ricevente", disabled=True),
-                "Sat. Attuale": st.column_config.TextColumn("Sat. Attuale", disabled=True),
-                "Distanza media (km)": st.column_config.TextColumn("Distanza media (km)", disabled=True),
-                "Cap. Residua": st.column_config.TextColumn("Cap. Residua", disabled=True),
-                "_score": None,
-                "_sat": None,
-                "_avg_dist": None,
-                "_cap": None,
-            },
-            disabled=["Ricevente", "Sat. Attuale", "Distanza media (km)", "Cap. Residua"],
-            hide_index=True,
-            use_container_width=True,
-            column_order=["Seleziona", "Ricevente", "Sat. Attuale", "Distanza media (km)", "Cap. Residua"],
-            key="recv_editor"
-        )
-
-        selected_receivers = edited_recv[edited_recv['Seleziona']]['Ricevente'].tolist()
-
-        # --- SATURAZIONE FUTURA CALCOLATA (non stimata) ---
-        st.markdown("#### 📊 Saturazione futura calcolata")
+        # Se ci sono riceventi selezionati, calcola saturazione futura
+        selected_receivers = [r for r, sel in zip(recv_df['Ricevente'], recv_df['Seleziona']) if sel]
 
         if selected_receivers:
-            # Calcola saturazione esatta usando run_simulation su dataset temporaneo
             abc = st.session_state.abc_vals
-
-            # Applica riassegnazione temporanea
             df_temp = apply_reassignment(
                 st.session_state.df_c_working, removed_name, selected_receivers, df_v
             )
-
-            # Esegui simulazione completa sul dataset temporaneo
             temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
-
-            # Rimuovi il venditore eliminato dalla lista attiva
             temp_active = [r for r in temp_active if r != removed_name]
-
-            # Assicurati che i riceventi selezionati siano attivi
             temp_active = list(dict.fromkeys(temp_active + selected_receivers))
 
             if len(temp_active) > 0:
-                temp_res, temp_df_w = run_simulation(
+                temp_res, _ = run_simulation(
                     df_temp, df_v, temp_active, col_vol,
                     abc['da_a'], abc['da_b'], abc['da_c'],
                     abc['freq_a'], abc['freq_b'], abc['freq_c'],
@@ -832,36 +796,59 @@ def main():
                 )
 
                 if temp_res is not None:
-                    # Mostra saturazione calcolata per ogni ricevente selezionato
-                    fut_rows = []
-                    for r in selected_receivers:
-                        if r in temp_res['sales_rep'].values:
-                            row = temp_res[temp_res['sales_rep'] == r].iloc[0]
-                            fut_sat = row['saturazione_pct']
-                            sat_color = "green" if fut_sat < 85 else "orange" if fut_sat < 100 else "red"
-                            fut_rows.append([
-                                f"**{r}**",
-                                f"{row['saturazione_pct']:.1f}%",
-                                f"<span style='color:{sat_color}'>{fut_sat:.1f}%</span>",
-                                f"{row['n_clienti']:.0f}",
-                                fmt_eu(row['volume_abc']),
-                                f"{row['ore_totali_annue']:.1f}h",
-                                f"{row['km_annui']:.0f}km"
-                            ])
+                    for idx, row in recv_df.iterrows():
+                        rep = row['Ricevente']
+                        if rep in temp_res['sales_rep'].values:
+                            fut_sat = temp_res[temp_res['sales_rep'] == rep]['saturazione_pct'].iloc[0]
+                            recv_df.at[idx, 'Sat. Futura Calcolata'] = fut_sat
 
-                    if fut_rows:
-                        fut_headers = ['Ricevente', 'Sat. Attuale', 'Sat. Futura Calcolata', 
-                                      'N. Clienti', 'Volume ABC', 'Ore Totali', 'Km Annui']
-                        st.markdown(render_html_table(fut_headers, fut_rows, "12px"), unsafe_allow_html=True)
-                        st.caption("La saturazione futura è calcolata con il modello completo (viaggio reale + visite reali).")
-                else:
-                    st.info("Calcolo saturazione in corso...")
-            else:
-                st.warning("Nessun venditore attivo rimasto.")
-        else:
-            st.info("Seleziona almeno un ricevente per vedere la saturazione calcolata.")
+        # Colora saturazione per la visualizzazione HTML
+        def color_sat(val):
+            if pd.isna(val) or val is None:
+                return "—"
+            try:
+                v = float(val)
+                if v > 110: return f"<span style='color:#ff4444;font-weight:bold'>{v:.1f}% 🔴</span>"
+                elif v > 100: return f"<span style='color:#ff8800;font-weight:bold'>{v:.1f}% 🟠</span>"
+                elif v > 85: return f"<span style='color:#ffcc00;font-weight:bold'>{v:.1f}% 🟡</span>"
+                else: return f"<span style='color:#44ff44;font-weight:bold'>{v:.1f}% 🟢</span>"
+            except:
+                return str(val)
 
-        # --- PREVIEW ALLOCAZIONE DETTAGLIATA ---
+        # Costruisci tabella HTML con colori
+        recv_headers = ['Seleziona', 'Ricevente', 'Sat. Attuale', 'Distanza media (km)', 'Sat. Futura Calcolata']
+        recv_rows = []
+        for idx, row in recv_df.iterrows():
+            checked = "✅" if row['Seleziona'] else "⬜"
+            sat_display = color_sat(row['Sat. Attuale'])
+            fut_display = color_sat(row['Sat. Futura Calcolata'])
+            recv_rows.append([
+                checked,
+                f"**{row['Ricevente']}**",
+                sat_display,
+                row['Distanza media (km)'],
+                fut_display
+            ])
+
+        st.markdown(render_html_table(recv_headers, recv_rows, "12px"), unsafe_allow_html=True)
+
+        # Checkbox sotto la tabella per selezionare/deselezionare
+        st.markdown("---")
+        cols = st.columns(min(len(recv_df), 4))
+        for idx, row in recv_df.iterrows():
+            col_idx = idx % len(cols)
+            with cols[col_idx]:
+                recv_df.at[idx, 'Seleziona'] = st.checkbox(
+                    f"{row['Ricevente']}", 
+                    value=row['Seleziona'],
+                    key=f"chk_recv_{row['Ricevente']}"
+                )
+
+        selected_receivers = recv_df[recv_df['Seleziona']]['Ricevente'].tolist()
+
+        if selected_receivers:
+            st.caption("La saturazione futura è calcolata con il modello completo (viaggio reale + visite reali).")
+
         st.divider()
         st.markdown("### 📊 Preview allocazione clienti")
 
