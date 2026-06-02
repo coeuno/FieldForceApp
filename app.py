@@ -359,64 +359,96 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # =============================================================================
 # FUNZIONI DOWNSIZE
 # =============================================================================
-def rank_receivers(orphan_df, df_v, current_result, active_reps, max_km=9999):
-    """Rank riceventi per combinazione distanza / saturazione, filtrati per max_km."""
+def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=9999):
+    """
+    Rank riceventi per combinazione distanza (dal centroide del loro bacino esistente) / saturazione.
+    La distanza media dei clienti orfani è calcolata dal centroide dei clienti che il ricevente
+    già visita, non dalla sua casa base. Questo è molto più realistico per un tour di lavoro.
+    """
     df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
     scores = []
     for rep in active_reps:
         rep_rows = df_v_valid[df_v_valid['sales rep'] == rep]
         if len(rep_rows) == 0:
             continue
-        rep_row = rep_rows.iloc[0]
-        rep_lat, rep_lon = rep_row['latitudine'], rep_row['longitudine']
-        
-        # Distanza media dai clienti orfani
+
+        # --- CENTROIDE DEL BACINO ESISTENTE ---
+        # Trova i clienti che questo ricevente già visita nel working set attuale
+        rep_clients = df_c[df_c['sales rep'] == rep].dropna(subset=['latitudine', 'longitudine'])
+        if len(rep_clients) > 0:
+            # Centroide = media lat/lon dei clienti esistenti
+            centroid_lat = rep_clients['latitudine'].mean()
+            centroid_lon = rep_clients['longitudine'].mean()
+        else:
+            # Fallback: usa casa base del venditore se non ha clienti
+            rep_row = rep_rows.iloc[0]
+            centroid_lat = rep_row['latitudine']
+            centroid_lon = rep_row['longitudine']
+
+        # Distanza media dai clienti orfani al centroide del bacino del ricevente
         dists = orphan_df.apply(
-            lambda row: haversine_km(row['longitudine'], row['latitudine'], rep_lon, rep_lat),
+            lambda row: haversine_km(row['longitudine'], row['latitudine'], centroid_lon, centroid_lat),
             axis=1
         )
         avg_dist = dists.mean() if len(dists) > 0 else 9999
-        
+
         # Filtra per max_km
         if avg_dist > max_km:
             continue
-        
+
         # Saturazione attuale
         if current_result is not None and rep in current_result['sales_rep'].values:
             sat = current_result[current_result['sales_rep'] == rep]['saturazione_pct'].iloc[0]
         else:
             sat = 50.0
-        
+
         cap_residua = max(0.0, 100.0 - sat)
-        
+
         # Score: più alto = migliore
         dist_score = max(0.0, 1.0 - avg_dist / 300.0)
         sat_score = cap_residua / 100.0
         score = 0.4 * dist_score + 0.6 * sat_score
-        
+
         scores.append((rep, score, avg_dist, sat, cap_residua))
-    
+
     scores.sort(key=lambda x: x[1], reverse=True)
     return scores
 
 
-def preview_allocation(orphan_df, selected_receivers, df_v):
-    """Preview: ogni cliente orfano va al ricevente più vicino tra i selezionati."""
-    df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
-    v_coords = df_v_valid[df_v_valid['sales rep'].isin(selected_receivers)][
-        ['sales rep', 'latitudine', 'longitudine']
-    ].set_index('sales rep')
-    
-    allocation = {r: [] for r in selected_receivers if r in v_coords.index}
+
+def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
+    """
+    Preview: ogni cliente orfano va al ricevente più vicino tra i selezionati.
+    La distanza è calcolata dal centroide del bacino esistente di ogni ricevente.
+    """
+    # Calcola centroide per ogni ricevente
+    v_centroids = {}
+    for r in selected_receivers:
+        rep_clients = df_c[df_c['sales rep'] == r].dropna(subset=['latitudine', 'longitudine'])
+        if len(rep_clients) > 0:
+            v_centroids[r] = (
+                rep_clients['latitudine'].mean(),
+                rep_clients['longitudine'].mean()
+            )
+        else:
+            # Fallback: casa base
+            rep_rows = df_v.dropna(subset=['latitudine', 'longitudine'])
+            rep_rows = rep_rows[rep_rows['sales rep'] == r]
+            if len(rep_rows) > 0:
+                v_centroids[r] = (rep_rows.iloc[0]['latitudine'], rep_rows.iloc[0]['longitudine'])
+            else:
+                continue
+
+    allocation = {r: [] for r in selected_receivers if r in v_centroids}
     for idx, row in orphan_df.iterrows():
         best_r = None
         best_d = float('inf')
         for r in selected_receivers:
-            if r not in v_coords.index:
+            if r not in v_centroids:
                 continue
             d = haversine_km(
                 row['longitudine'], row['latitudine'],
-                v_coords.loc[r, 'longitudine'], v_coords.loc[r, 'latitudine']
+                v_centroids[r][1], v_centroids[r][0]
             )
             if d < best_d:
                 best_d = d
@@ -426,37 +458,50 @@ def preview_allocation(orphan_df, selected_receivers, df_v):
     return allocation
 
 
+
 def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
-    """Applica la riassegnazione: ogni cliente orfano al ricevente più vicino."""
+    """Applica la riassegnazione: ogni cliente orfano al ricevente più vicino (dal centroide bacino)."""
     df = df_c.copy()
     orphan_mask = df['sales rep'] == removed_rep
     if not orphan_mask.any():
         return df
-    
+
     orphan_df = df[orphan_mask].copy()
-    df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
-    v_coords = df_v_valid[df_v_valid['sales rep'].isin(selected_receivers)][
-        ['sales rep', 'latitudine', 'longitudine']
-    ].set_index('sales rep')
-    
+
+    # Calcola centroidi bacini riceventi
+    v_centroids = {}
+    for r in selected_receivers:
+        rep_clients = df[df['sales rep'] == r].dropna(subset=['latitudine', 'longitudine'])
+        if len(rep_clients) > 0:
+            v_centroids[r] = (
+                rep_clients['latitudine'].mean(),
+                rep_clients['longitudine'].mean()
+            )
+        else:
+            rep_rows = df_v.dropna(subset=['latitudine', 'longitudine'])
+            rep_rows = rep_rows[rep_rows['sales rep'] == r]
+            if len(rep_rows) > 0:
+                v_centroids[r] = (rep_rows.iloc[0]['latitudine'], rep_rows.iloc[0]['longitudine'])
+
     for idx in orphan_df.index:
         row = df.loc[idx]
         best_r = None
         best_d = float('inf')
         for r in selected_receivers:
-            if r not in v_coords.index:
+            if r not in v_centroids:
                 continue
             d = haversine_km(
                 row['longitudine'], row['latitudine'],
-                v_coords.loc[r, 'longitudine'], v_coords.loc[r, 'latitudine']
+                v_centroids[r][1], v_centroids[r][0]
             )
             if d < best_d:
                 best_d = d
                 best_r = r
         if best_r:
             df.loc[idx, 'sales rep'] = best_r
-    
+
     return df
+
 
 
 def render_html_table(headers, rows, font_size="12px"):
@@ -660,31 +705,30 @@ def main():
                     st.rerun()
             st.stop()
 
-        # --- TABELLA CLIENTI ORFANI ---
+        # --- TABELLA CLIENTI ORFANI (ORIZZONTALE) ---
         orphan_df = classify_abc(orphan_df, col_vol, 
                                   st.session_state.abc_vals['da_a'],
                                   st.session_state.abc_vals['da_b'],
                                   st.session_state.abc_vals['da_c'])
-        
+
         n_a = int((orphan_df['classe'] == 'A').sum())
         n_b = int((orphan_df['classe'] == 'B').sum())
         n_c = int((orphan_df['classe'] == 'C').sum())
         n_d = int((orphan_df['classe'] == 'D').sum())
-        
-        vol_a = orphan_df.loc[orphan_df['classe'] == 'A', col_vol].sum() if n_a > 0 else 0
-        vol_b = orphan_df.loc[orphan_df['classe'] == 'B', col_vol].sum() if n_b > 0 else 0
-        vol_c = orphan_df.loc[orphan_df['classe'] == 'C', col_vol].sum() if n_c > 0 else 0
-        vol_d = orphan_df.loc[orphan_df['classe'] == 'D', col_vol].sum() if n_d > 0 else 0
-        
+
+        vol_a = float(orphan_df.loc[orphan_df['classe'] == 'A', col_vol].sum()) if n_a > 0 else 0.0
+        vol_b = float(orphan_df.loc[orphan_df['classe'] == 'B', col_vol].sum()) if n_b > 0 else 0.0
+        vol_c = float(orphan_df.loc[orphan_df['classe'] == 'C', col_vol].sum()) if n_c > 0 else 0.0
+        vol_d = float(orphan_df.loc[orphan_df['classe'] == 'D', col_vol].sum()) if n_d > 0 else 0.0
+
         st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
-        
-        orphan_headers = ['Classe', 'N. Clienti', 'Volume']
+
+        # Tabella orizzontale: colonne = classi, righe = metriche
+        orphan_headers = ['Metrica', 'Cliente A', 'Cliente B', 'Cliente C', 'Cliente D', 'Totali']
         orphan_rows = [
-            ['🟢 A', str(n_a), fmt_eu(vol_a)],
-            ['🟡 B', str(n_b), fmt_eu(vol_b)],
-            ['🔴 C', str(n_c), fmt_eu(vol_c)],
-            ['⚫ D', str(n_d), fmt_eu(vol_d)],
-            ['**TOTALE**', f'**{n_orfani}**', f'**{fmt_eu(vol_a + vol_b + vol_c + vol_d)}**']
+            ['N. clienti', str(n_a), str(n_b), str(n_c), str(n_d), f'**{n_orfani}**'],
+            ['Volume', fmt_eu(vol_a), fmt_eu(vol_b), fmt_eu(vol_c), fmt_eu(vol_d), 
+             f'**{fmt_eu(vol_a + vol_b + vol_c + vol_d)}**']
         ]
         st.markdown(render_html_table(orphan_headers, orphan_rows, "13px"), unsafe_allow_html=True)
 
@@ -692,9 +736,9 @@ def main():
 
         # --- FILTRO KM E TABELLA RICEVENTI ---
         st.markdown("### 🎯 Seleziona i riceventi")
-        
+
         active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
-        
+
         # Filtro distanza massima
         max_km = st.number_input(
             "Max distanza media (km) per considerare un ricevente",
@@ -703,88 +747,151 @@ def main():
             step=10, key="max_km_input"
         )
         st.session_state.max_km_filter = max_km
-        
-        ranked = rank_receivers(orphan_df, df_v, st.session_state.get('current_result'), active_reps, max_km)
-        
+
+        ranked = rank_receivers(orphan_df, st.session_state.df_c_working, df_v, 
+                                st.session_state.get('current_result'), active_reps, max_km)
+
         if not ranked:
             st.warning(f"Nessun ricevente entro {max_km} km. Prova ad aumentare la distanza massima.")
             st.stop()
 
-        # Costruisci tabella riceventi con checkbox inline
-        recv_headers = ['Seleziona', 'Ricevente', 'Sat. Attuale', 'Distanza media (km)', 'Sat. Futura Stimata']
-        recv_rows = []
-        selected_receivers = []
-        
+        # --- TABELLA RICEVENTI CON DATA_EDITOR ---
+        # Prepara DataFrame per data_editor con colonna checkbox
+        recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
             is_suggested = i < 3
-            chk_key = f"sel_recv_{rep}"
-            checked = st.checkbox(f"Seleziona {rep}", value=is_suggested, key=chk_key, label_visibility="collapsed")
-            if checked:
-                selected_receivers.append(rep)
-            
-            # Calcola saturazione futura stimata
-            fut_sat = sat
-            if checked:
-                # Stima impatto
-                max_ore = ore_effettive_gg * gg_lavoro
-                abc = st.session_state.abc_vals
-                # Trova clienti assegnati a questo ricevente
-                alloc_temp = preview_allocation(orphan_df, selected_receivers, df_v)
-                assigned_indices = [idx for idx, _ in alloc_temp.get(rep, [])]
-                if assigned_indices:
-                    sub_orf = orphan_df.loc[assigned_indices]
-                    freq_map = {'A': abc['freq_a'], 'B': abc['freq_b'], 'C': abc['freq_c']}
-                    sub_orf['freq'] = sub_orf['classe'].map(freq_map).fillna(0)
-                    ore_vis_add = (sub_orf['freq'].sum() * dur_visita / 60.0)
-                    avg_d = np.mean([d for _, d in alloc_temp[rep]]) if alloc_temp[rep] else 0
-                    ore_viag_add = (avg_d * 2.0 * sub_orf['freq'].sum()) / 45.0
-                    sat_add = (ore_vis_add + ore_viag_add) / max_ore * 100 if max_ore > 0 else 0
-                    fut_sat = sat + sat_add
-            
-            sat_color = "green" if fut_sat < 85 else "orange" if fut_sat < 100 else "red"
-            sat_display = f"<span style='color:{sat_color}'>{fut_sat:.1f}%</span>" if checked else f"{sat:.1f}%"
-            
-            recv_rows.append([
-                "✅" if checked else "⬜",
-                f"**{rep}**",
-                f"{sat:.1f}%",
-                f"{avg_dist:.1f}",
-                sat_display
-            ])
-        
-        st.markdown(render_html_table(recv_headers, recv_rows, "12px"), unsafe_allow_html=True)
+            recv_data.append({
+                'Seleziona': is_suggested,
+                'Ricevente': rep,
+                'Sat. Attuale': f"{sat:.1f}%",
+                'Distanza media (km)': f"{avg_dist:.1f}",
+                'Cap. Residua': f"{cap:.1f}%",
+                '_score': score,
+                '_sat': sat,
+                '_avg_dist': avg_dist,
+                '_cap': cap
+            })
+
+        recv_df = pd.DataFrame(recv_data)
+
+        # Usa st.data_editor per selezione interattiva
+        edited_recv = st.data_editor(
+            recv_df,
+            column_config={
+                "Seleziona": st.column_config.CheckboxColumn(
+                    "Seleziona",
+                    help="Spunta per selezionare questo ricevente",
+                    default=False,
+                ),
+                "Ricevente": st.column_config.TextColumn("Ricevente", disabled=True),
+                "Sat. Attuale": st.column_config.TextColumn("Sat. Attuale", disabled=True),
+                "Distanza media (km)": st.column_config.TextColumn("Distanza media (km)", disabled=True),
+                "Cap. Residua": st.column_config.TextColumn("Cap. Residua", disabled=True),
+                "_score": None,
+                "_sat": None,
+                "_avg_dist": None,
+                "_cap": None,
+            },
+            disabled=["Ricevente", "Sat. Attuale", "Distanza media (km)", "Cap. Residua"],
+            hide_index=True,
+            use_container_width=True,
+            column_order=["Seleziona", "Ricevente", "Sat. Attuale", "Distanza media (km)", "Cap. Residua"],
+            key="recv_editor"
+        )
+
+        selected_receivers = edited_recv[edited_recv['Seleziona']]['Ricevente'].tolist()
+
+        # --- SATURAZIONE FUTURA CALCOLATA (non stimata) ---
+        st.markdown("#### 📊 Saturazione futura calcolata")
+
+        if selected_receivers:
+            # Calcola saturazione esatta usando run_simulation su dataset temporaneo
+            abc = st.session_state.abc_vals
+
+            # Applica riassegnazione temporanea
+            df_temp = apply_reassignment(
+                st.session_state.df_c_working, removed_name, selected_receivers, df_v
+            )
+
+            # Esegui simulazione completa sul dataset temporaneo
+            temp_active = [r for r, s in rep_status.items() if s and r != removed_name]
+
+            # Rimuovi il venditore eliminato dalla lista attiva
+            temp_active = [r for r in temp_active if r != removed_name]
+
+            # Assicurati che i riceventi selezionati siano attivi
+            temp_active = list(dict.fromkeys(temp_active + selected_receivers))
+
+            if len(temp_active) > 0:
+                temp_res, temp_df_w = run_simulation(
+                    df_temp, df_v, temp_active, col_vol,
+                    abc['da_a'], abc['da_b'], abc['da_c'],
+                    abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                    dur_visita, ore_effettive_gg, gg_lavoro,
+                    max_stops_per_day
+                )
+
+                if temp_res is not None:
+                    # Mostra saturazione calcolata per ogni ricevente selezionato
+                    fut_rows = []
+                    for r in selected_receivers:
+                        if r in temp_res['sales_rep'].values:
+                            row = temp_res[temp_res['sales_rep'] == r].iloc[0]
+                            fut_sat = row['saturazione_pct']
+                            sat_color = "green" if fut_sat < 85 else "orange" if fut_sat < 100 else "red"
+                            fut_rows.append([
+                                f"**{r}**",
+                                f"{row['saturazione_pct']:.1f}%",
+                                f"<span style='color:{sat_color}'>{fut_sat:.1f}%</span>",
+                                f"{row['n_clienti']:.0f}",
+                                fmt_eu(row['volume_abc']),
+                                f"{row['ore_totali_annue']:.1f}h",
+                                f"{row['km_annui']:.0f}km"
+                            ])
+
+                    if fut_rows:
+                        fut_headers = ['Ricevente', 'Sat. Attuale', 'Sat. Futura Calcolata', 
+                                      'N. Clienti', 'Volume ABC', 'Ore Totali', 'Km Annui']
+                        st.markdown(render_html_table(fut_headers, fut_rows, "12px"), unsafe_allow_html=True)
+                        st.caption("La saturazione futura è calcolata con il modello completo (viaggio reale + visite reali).")
+                else:
+                    st.info("Calcolo saturazione in corso...")
+            else:
+                st.warning("Nessun venditore attivo rimasto.")
+        else:
+            st.info("Seleziona almeno un ricevente per vedere la saturazione calcolata.")
 
         # --- PREVIEW ALLOCAZIONE DETTAGLIATA ---
         st.divider()
-        st.markdown("### 📊 Preview allocazione")
-        
+        st.markdown("### 📊 Preview allocazione clienti")
+
         if not selected_receivers:
             st.warning("Seleziona almeno un ricevente per vedere la preview")
         else:
-            alloc = preview_allocation(orphan_df, selected_receivers, df_v)
-            
+            alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
+
             preview_headers = ['Ricevente', 'Clienti A', 'Clienti B', 'Clienti C', 'Clienti D', 'Totale Clienti', 'Volume Totale']
             preview_rows = []
-            
+
             for r in selected_receivers:
                 n_ass = len(alloc.get(r, []))
                 if n_ass > 0:
                     assigned_indices = [idx for idx, _ in alloc[r]]
                     sub_assigned = orphan_df.loc[assigned_indices]
-                    
+
                     na = int((sub_assigned['classe'] == 'A').sum())
                     nb = int((sub_assigned['classe'] == 'B').sum())
                     nc = int((sub_assigned['classe'] == 'C').sum())
                     nd = int((sub_assigned['classe'] == 'D').sum())
                     vol_tot = sub_assigned[col_vol].sum()
-                    
+
                     preview_rows.append([
                         f"**{r}**",
                         str(na), str(nb), str(nc), str(nd),
                         str(n_ass),
                         fmt_eu(vol_tot)
                     ])
-            
+
             if preview_rows:
                 st.markdown(render_html_table(preview_headers, preview_rows, "12px"), unsafe_allow_html=True)
             else:
@@ -816,7 +923,7 @@ def main():
                 st.session_state[f"rep_{removed_name}"] = True
                 st.session_state.pending_removal = None
                 st.rerun()
-        
+
         st.stop()
 
     # =============================================================================
