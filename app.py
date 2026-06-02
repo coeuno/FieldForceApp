@@ -359,8 +359,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # =============================================================================
 # FUNZIONI DOWNSIZE
 # =============================================================================
-def rank_receivers(orphan_df, df_v, current_result, active_reps):
-    """Rank riceventi per combinazione distanza / saturazione."""
+def rank_receivers(orphan_df, df_v, current_result, active_reps, max_km=9999):
+    """Rank riceventi per combinazione distanza / saturazione, filtrati per max_km."""
     df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
     scores = []
     for rep in active_reps:
@@ -376,6 +376,10 @@ def rank_receivers(orphan_df, df_v, current_result, active_reps):
             axis=1
         )
         avg_dist = dists.mean() if len(dists) > 0 else 9999
+        
+        # Filtra per max_km
+        if avg_dist > max_km:
+            continue
         
         # Saturazione attuale
         if current_result is not None and rep in current_result['sales_rep'].values:
@@ -454,6 +458,27 @@ def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
     
     return df
 
+
+def render_html_table(headers, rows, font_size="12px"):
+    """Renderizza una tabella HTML con bordi e stile."""
+    header_html = "".join([
+        f'<th style="border:1px solid #555;background:#333;color:#fff;padding:6px 8px;text-align:center;font-size:{font_size};">{h}</th>'
+        for h in headers
+    ])
+    rows_html = ""
+    for row in rows:
+        cells = "".join([
+            f'<td style="border:1px solid #444;padding:5px 8px;text-align:center;font-size:{font_size};">{cell}</td>'
+            for cell in row
+        ])
+        rows_html += f'<tr>{cells}</tr>'
+    
+    return (
+        f'<table style="border-collapse:collapse;width:100%;margin:8px 0;">'
+        f'<thead><tr>{header_html}</tr></thead>'
+        f'<tbody>{rows_html}</tbody></table>'
+    )
+
 # =============================================================================
 # INTERFACCIA
 # =============================================================================
@@ -473,6 +498,7 @@ def main():
     if 'abc_version' not in st.session_state: st.session_state.abc_version = 2
     if 'abc_vals' not in st.session_state: st.session_state.abc_vals = None
     if 'min_vol' not in st.session_state: st.session_state.min_vol = 0
+    if 'max_km_filter' not in st.session_state: st.session_state.max_km_filter = 200
 
     st.markdown("""
     <style>
@@ -634,10 +660,7 @@ def main():
                     st.rerun()
             st.stop()
 
-        # --- CARD RIASSUNTIVA CLIENTI ORFANI ---
-        st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
-        
-        # Classifica i clienti orfani
+        # --- TABELLA CLIENTI ORFANI ---
         orphan_df = classify_abc(orphan_df, col_vol, 
                                   st.session_state.abc_vals['da_a'],
                                   st.session_state.abc_vals['da_b'],
@@ -653,66 +676,85 @@ def main():
         vol_c = orphan_df.loc[orphan_df['classe'] == 'C', col_vol].sum() if n_c > 0 else 0
         vol_d = orphan_df.loc[orphan_df['classe'] == 'D', col_vol].sum() if n_d > 0 else 0
         
-        c_a, c_b, c_c, c_d = st.columns(4)
-        with c_a: st.metric("🟢 Classe A", f"{n_a} clienti", f"{fmt_eu(vol_a)} vol")
-        with c_b: st.metric("🟡 Classe B", f"{n_b} clienti", f"{fmt_eu(vol_b)} vol")
-        with c_c: st.metric("🔴 Classe C", f"{n_c} clienti", f"{fmt_eu(vol_c)} vol")
-        with c_d: st.metric("⚫ Classe D", f"{n_d} clienti", f"{fmt_eu(vol_d)} vol")
+        st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
+        
+        orphan_headers = ['Classe', 'N. Clienti', 'Volume']
+        orphan_rows = [
+            ['🟢 A', str(n_a), fmt_eu(vol_a)],
+            ['🟡 B', str(n_b), fmt_eu(vol_b)],
+            ['🔴 C', str(n_c), fmt_eu(vol_c)],
+            ['⚫ D', str(n_d), fmt_eu(vol_d)],
+            ['**TOTALE**', f'**{n_orfani}**', f'**{fmt_eu(vol_a + vol_b + vol_c + vol_d)}**']
+        ]
+        st.markdown(render_html_table(orphan_headers, orphan_rows, "13px"), unsafe_allow_html=True)
 
         st.divider()
 
-        # --- TABELLA RICEVENTI CON SELEZIONE ---
+        # --- FILTRO KM E TABELLA RICEVENTI ---
         st.markdown("### 🎯 Seleziona i riceventi")
+        
         active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
         
-        ranked = rank_receivers(orphan_df, df_v, st.session_state.get('current_result'), active_reps)
+        # Filtro distanza massima
+        max_km = st.number_input(
+            "Max distanza media (km) per considerare un ricevente",
+            min_value=10, max_value=1000,
+            value=st.session_state.max_km_filter,
+            step=10, key="max_km_input"
+        )
+        st.session_state.max_km_filter = max_km
+        
+        ranked = rank_receivers(orphan_df, df_v, st.session_state.get('current_result'), active_reps, max_km)
         
         if not ranked:
-            st.error("Nessun ricevente disponibile")
+            st.warning(f"Nessun ricevente entro {max_km} km. Prova ad aumentare la distanza massima.")
             st.stop()
 
-        # Costruisci DataFrame per la tabella
-        tbl_data = []
+        # Costruisci tabella riceventi con checkbox inline
+        recv_headers = ['Seleziona', 'Ricevente', 'Sat. Attuale', 'Distanza media (km)', 'Sat. Futura Stimata']
+        recv_rows = []
+        selected_receivers = []
+        
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
             is_suggested = i < 3
-            tbl_data.append({
-                'Seleziona': is_suggested,
-                'Ricevente': rep,
-                'Saturazione %': f"{sat:.1f}",
-                'Cap. Residua %': f"{cap:.1f}",
-                'Distanza media (km)': f"{avg_dist:.1f}",
-                'Score': f"{score:.3f}",
-                'Rank': i + 1
-            })
+            chk_key = f"sel_recv_{rep}"
+            checked = st.checkbox(f"Seleziona {rep}", value=is_suggested, key=chk_key, label_visibility="collapsed")
+            if checked:
+                selected_receivers.append(rep)
+            
+            # Calcola saturazione futura stimata
+            fut_sat = sat
+            if checked:
+                # Stima impatto
+                max_ore = ore_effettive_gg * gg_lavoro
+                abc = st.session_state.abc_vals
+                # Trova clienti assegnati a questo ricevente
+                alloc_temp = preview_allocation(orphan_df, selected_receivers, df_v)
+                assigned_indices = [idx for idx, _ in alloc_temp.get(rep, [])]
+                if assigned_indices:
+                    sub_orf = orphan_df.loc[assigned_indices]
+                    freq_map = {'A': abc['freq_a'], 'B': abc['freq_b'], 'C': abc['freq_c']}
+                    sub_orf['freq'] = sub_orf['classe'].map(freq_map).fillna(0)
+                    ore_vis_add = (sub_orf['freq'].sum() * dur_visita / 60.0)
+                    avg_d = np.mean([d for _, d in alloc_temp[rep]]) if alloc_temp[rep] else 0
+                    ore_viag_add = (avg_d * 2.0 * sub_orf['freq'].sum()) / 45.0
+                    sat_add = (ore_vis_add + ore_viag_add) / max_ore * 100 if max_ore > 0 else 0
+                    fut_sat = sat + sat_add
+            
+            sat_color = "green" if fut_sat < 85 else "orange" if fut_sat < 100 else "red"
+            sat_display = f"<span style='color:{sat_color}'>{fut_sat:.1f}%</span>" if checked else f"{sat:.1f}%"
+            
+            recv_rows.append([
+                "✅" if checked else "⬜",
+                f"**{rep}**",
+                f"{sat:.1f}%",
+                f"{avg_dist:.1f}",
+                sat_display
+            ])
         
-        tbl_df = pd.DataFrame(tbl_data)
-        
-        # Streamlit non permette checkbox in st.data_editor senza setup, quindi usiamo
-        # checkbox individuali per ogni ricevente, ordinati
-        st.caption("I primi 3 sono suggeriti dal sistema. Seleziona uno o più riceventi:")
-        
-        selected_receivers = []
-        for _, row in tbl_df.iterrows():
-            col1, col2, col3, col4, col5, col6 = st.columns([1, 3, 2, 2, 2, 1])
-            with col1:
-                badge = "🥇" if row['Rank'] == 1 else "🥈" if row['Rank'] == 2 else "🥉" if row['Rank'] == 3 else f"{int(row['Rank'])}."
-                st.markdown(f"**{badge}**")
-            with col2:
-                st.markdown(f"**{row['Ricevente']}**")
-            with col3:
-                sat_val = float(row['Saturazione %'])
-                color = "green" if sat_val < 85 else "orange" if sat_val < 100 else "red"
-                st.markdown(f"<span style='color:{color}'>{row['Saturazione %']}%</span>", unsafe_allow_html=True)
-            with col4:
-                st.markdown(f"{row['Cap. Residua %']}%")
-            with col5:
-                st.markdown(f"{row['Distanza media (km)']} km")
-            with col6:
-                checked = st.checkbox("Seleziona", value=row['Seleziona'], key=f"sel_recv_{row['Ricevente']}")
-                if checked:
-                    selected_receivers.append(row['Ricevente'])
+        st.markdown(render_html_table(recv_headers, recv_rows, "12px"), unsafe_allow_html=True)
 
-        # --- PREVIEW ALLOCAZIONE ---
+        # --- PREVIEW ALLOCAZIONE DETTAGLIATA ---
         st.divider()
         st.markdown("### 📊 Preview allocazione")
         
@@ -721,56 +763,32 @@ def main():
         else:
             alloc = preview_allocation(orphan_df, selected_receivers, df_v)
             
-            preview_data = []
+            preview_headers = ['Ricevente', 'Clienti A', 'Clienti B', 'Clienti C', 'Clienti D', 'Totale Clienti', 'Volume Totale']
+            preview_rows = []
+            
             for r in selected_receivers:
                 n_ass = len(alloc.get(r, []))
                 if n_ass > 0:
-                    avg_d = np.mean([d for _, d in alloc[r]]) if alloc[r] else 0
-                    preview_data.append({
-                        'Ricevente': r,
-                        'Clienti assegnati': n_ass,
-                        'Distanza media (km)': f"{avg_d:.1f}"
-                    })
+                    assigned_indices = [idx for idx, _ in alloc[r]]
+                    sub_assigned = orphan_df.loc[assigned_indices]
+                    
+                    na = int((sub_assigned['classe'] == 'A').sum())
+                    nb = int((sub_assigned['classe'] == 'B').sum())
+                    nc = int((sub_assigned['classe'] == 'C').sum())
+                    nd = int((sub_assigned['classe'] == 'D').sum())
+                    vol_tot = sub_assigned[col_vol].sum()
+                    
+                    preview_rows.append([
+                        f"**{r}**",
+                        str(na), str(nb), str(nc), str(nd),
+                        str(n_ass),
+                        fmt_eu(vol_tot)
+                    ])
             
-            if preview_data:
-                st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
-                
-                # Stima impatto saturazione
-                if st.session_state.get('current_result') is not None:
-                    res = st.session_state.current_result
-                    max_ore = ore_effettive_gg * gg_lavoro
-                    abc = st.session_state.abc_vals
-                    
-                    st.markdown("**Stima nuova saturazione:**")
-                    impact_cols = st.columns(len(selected_receivers))
-                    
-                    for idx, r in enumerate(selected_receivers):
-                        n_ass = len(alloc.get(r, []))
-                        if n_ass > 0 and r in res['sales_rep'].values:
-                            row = res[res['sales_rep'] == r].iloc[0]
-                            
-                            # Stima ore aggiuntive: usa i clienti assegnati a questo ricevente
-                            assigned_indices = [i for i, _ in alloc.get(r, [])]
-                            if assigned_indices:
-                                sub_orf = orphan_df.loc[assigned_indices]
-                                sub_orf = classify_abc(sub_orf, col_vol, abc['da_a'], abc['da_b'], abc['da_c'])
-                                freq_map = {'A': abc['freq_a'], 'B': abc['freq_b'], 'C': abc['freq_c']}
-                                sub_orf['freq'] = sub_orf['classe'].map(freq_map).fillna(0)
-                                ore_vis_add = (sub_orf['freq'].sum() * dur_visita / 60.0)
-                                avg_d = np.mean([d for _, d in alloc[r]]) if alloc[r] else 0
-                                # Stima viaggio: andata+ritorno * freq / velocità proxy
-                                ore_viag_add = (avg_d * 2.0 * sub_orf['freq'].sum()) / 45.0
-                                sat_add = (ore_vis_add + ore_viag_add) / max_ore * 100 if max_ore > 0 else 0
-                                new_sat = row['saturazione_pct'] + sat_add
-                                color = "green" if new_sat < 85 else "orange" if new_sat < 100 else "red"
-                                
-                                with impact_cols[idx]:
-                                    st.metric(
-                                        label=r,
-                                        value=f"{new_sat:.1f}%",
-                                        delta=f"+{sat_add:.1f}%",
-                                        delta_color="inverse" if new_sat > 100 else "normal"
-                                    )
+            if preview_rows:
+                st.markdown(render_html_table(preview_headers, preview_rows, "12px"), unsafe_allow_html=True)
+            else:
+                st.info("Nessun cliente assegnato ai riceventi selezionati")
 
         # --- BOTTONI CONFERMA / ANNULLA ---
         st.divider()
