@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from scipy.spatial import ConvexHull
 import warnings
+import zipfile
+from io import BytesIO
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
@@ -534,6 +536,269 @@ def render_html_table(headers, rows, font_size="12px"):
     )
 
 # =============================================================================
+# NUOVE FUNZIONI: MAPPE & EXPORT
+# =============================================================================
+def build_territory_map(df_work, df_v, active_reps, title=""):
+    """Genera la mappa territori Plotly (ConvexHull + scatter clienti + home base)."""
+    df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
+    fig = go.Figure()
+    if len(df_map) == 0:
+        return fig
+
+    colors = px.colors.qualitative.Alphabet
+    rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(active_reps)}
+
+    for rep in active_reps:
+        sub = df_map[df_map['assigned_rep'] == rep]
+        if len(sub) >= 3:
+            lon_h, lat_h = compute_hull_coords(sub)
+            if lon_h is not None:
+                fig.add_trace(go.Scattermapbox(
+                    mode='lines', lon=lon_h, lat=lat_h,
+                    line=dict(width=1.5, color=rep_colors[rep]),
+                    fill='toself', fillcolor=rep_colors[rep],
+                    opacity=0.25,
+                    name=f"Zona {rep}",
+                    hoverinfo='name'
+                ))
+
+    classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
+    for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
+        df_cl = df_map[df_map['classe'] == classe]
+        if len(df_cl) > 0:
+            fig.add_trace(go.Scattermapbox(
+                lat=df_cl['latitudine'], lon=df_cl['longitudine'],
+                mode='markers', marker=dict(size=size, color=color, opacity=0.8),
+                name=f"Classe {classe}",
+                text=df_cl['assigned_rep'].values,
+                hoverinfo='name+text'
+            ))
+
+    df_v_active = df_v[df_v['sales rep'].isin(active_reps)].dropna(subset=['latitudine', 'longitudine'])
+    if len(df_v_active) > 0:
+        fig.add_trace(go.Scattermapbox(
+            lat=df_v_active['latitudine'],
+            lon=df_v_active['longitudine'],
+            mode='markers',
+            marker=dict(size=14, color='black', opacity=0.9),
+            name='🏠 Home Base',
+            hoverinfo='name'
+        ))
+
+    fig.update_layout(
+        mapbox_style="carto-positron",
+        mapbox_zoom=5.5,
+        mapbox_center=dict(lat=42.5, lon=12.5),
+        margin=dict(r=0, t=30, l=0, b=120),
+        height=650,
+        title=title,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+            bgcolor='rgba(255,255,255,0.95)',
+            bordercolor='gray',
+            borderwidth=1
+        )
+    )
+    return fig
+
+
+def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title=""):
+    """Mappa di riassegnazione con frecce cliente → ricevente e home base venditore rimosso."""
+    fig = go.Figure()
+
+    # Home base venditore rimosso (X nera)
+    removed_home = df_v[df_v['sales rep'] == removed_rep].dropna(subset=['latitudine', 'longitudine'])
+    if len(removed_home) > 0:
+        fig.add_trace(go.Scattermapbox(
+            lat=removed_home['latitudine'].tolist(),
+            lon=removed_home['longitudine'].tolist(),
+            mode='markers',
+            marker=dict(size=20, color='black', symbol='x', opacity=0.9),
+            name=f'❌ {removed_rep} (rimosso)'
+        ))
+
+    colors = px.colors.qualitative.Bold
+    for i, receiver in enumerate(receivers):
+        color = colors[i % len(colors)]
+        recv_home = df_v[df_v['sales rep'] == receiver].dropna(subset=['latitudine', 'longitudine'])
+        if len(recv_home) == 0:
+            continue
+        recv_lat = recv_home.iloc[0]['latitudine']
+        recv_lon = recv_home.iloc[0]['longitudine']
+
+        # Home base ricevente
+        fig.add_trace(go.Scattermapbox(
+            lat=[recv_lat],
+            lon=[recv_lon],
+            mode='markers',
+            marker=dict(size=14, color=color, opacity=0.9),
+            name=f'🏠 {receiver}'
+        ))
+
+        # Clienti assegnati a questo ricevente
+        if receiver in allocation and len(allocation[receiver]) > 0:
+            assigned_indices = [idx for idx, _ in allocation[receiver]]
+            sub = orphan_df.loc[assigned_indices]
+
+            # Linee (frecce) da cliente a ricevente
+            for idx, row in sub.iterrows():
+                fig.add_trace(go.Scattermapbox(
+                    mode='lines',
+                    lat=[row['latitudine'], recv_lat],
+                    lon=[row['longitudine'], recv_lon],
+                    line=dict(width=1.5, color=color),
+                    opacity=0.5,
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+
+            # Marker clienti orfani
+            hover_text = []
+            for idx, row in sub.iterrows():
+                nome = row.get('ragione sociale', row.get('cliente', f'Cliente {idx}'))
+                hover_text.append(f"{nome}<br>→ {receiver}")
+
+            fig.add_trace(go.Scattermapbox(
+                lat=sub['latitudine'],
+                lon=sub['longitudine'],
+                mode='markers',
+                marker=dict(size=9, color=color, opacity=0.9),
+                name=f'Clienti → {receiver}',
+                text=hover_text,
+                hoverinfo='text'
+            ))
+
+    fig.update_layout(
+        mapbox_style="carto-positron",
+        mapbox_zoom=5.5,
+        mapbox_center=dict(lat=42.5, lon=12.5),
+        margin=dict(r=0, t=40, l=0, b=120),
+        height=700,
+        title=title or f"Riassegnazione: {removed_rep}",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+            bgcolor='rgba(255,255,255,0.95)',
+            bordercolor='gray',
+            borderwidth=1
+        )
+    )
+    return fig
+
+
+def fig_to_png(fig):
+    """Converte figura Plotly in bytes PNG. Richiede kaleido."""
+    try:
+        import plotly.io as pio
+        img_bytes = pio.to_image(fig, format="png", width=1600, height=1000, scale=2)
+        return img_bytes
+    except Exception as e:
+        st.warning(f"⚠️ Export PNG fallito (serve `pip install kaleido`): {e}")
+        return None
+
+
+def generate_excel_report(initial_result, final_result, reassignment_history, removal_details, col_vol):
+    """Genera Excel multi-foglio: Iniziale, Finale, Confronto, Dettaglio, Variazioni."""
+    if initial_result is None or final_result is None:
+        return None
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # 1. Stato Iniziale
+        init_sheet = initial_result.copy()
+        init_sheet.to_excel(writer, sheet_name='Stato Iniziale', index=False)
+
+        # 2. Stato Finale
+        final_sheet = final_result.copy()
+        final_sheet.to_excel(writer, sheet_name='Stato Finale', index=False)
+
+        # 3. Confronto Orizzontale
+        # Colonne = venditori (prima tutti quelli iniziali, poi tutti quelli finali)
+        all_reps = sorted(set(init_sheet['sales_rep'].tolist() + final_sheet['sales_rep'].tolist()))
+        metrics = ['n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'n_classe_d',
+                   'volume_abc', 'volume_d', 'ore_visite_annue', 'ore_viaggio_annue',
+                   'ore_totali_annue', 'saturazione_pct', 'km_annui', 'driving_min_giorno', 'visite_giorno']
+        metric_labels = ['N Clienti', 'N Classe A', 'N Classe B', 'N Classe C', 'N Classe D',
+                         'Volume ABC', 'Volume D', 'Ore Visite', 'Ore Viaggio',
+                         'Ore Totali', 'Saturazione %', 'KM Annui', 'Min/GG', 'Vis/GG']
+
+        confronto_data = {}
+        for rep in all_reps:
+            init_row = init_sheet[init_sheet['sales_rep'] == rep]
+            init_vals = init_row.iloc[0] if len(init_row) > 0 else {m: 0 for m in metrics}
+            confronto_data[f"{rep}_INIZIALE"] = [init_vals.get(m, 0) for m in metrics]
+
+        for rep in all_reps:
+            final_row = final_sheet[final_sheet['sales_rep'] == rep]
+            final_vals = final_row.iloc[0] if len(final_row) > 0 else {m: 0 for m in metrics}
+            confronto_data[f"{rep}_FINALE"] = [final_vals.get(m, 0) for m in metrics]
+
+        confronto_df = pd.DataFrame(confronto_data, index=metric_labels)
+        confronto_df.to_excel(writer, sheet_name='Confronto Orizzontale')
+
+        # 4. Dettaglio Riassegnazioni (con provenienza)
+        dettagli_rows = []
+        for hist in reassignment_history:
+            removed = hist['removed']
+            if removed in removal_details:
+                details = removal_details[removed]
+                alloc = details['allocation']
+                orphan_df = details['orphan_df']
+                for receiver, client_list in alloc.items():
+                    for client_idx, dist in client_list:
+                        if client_idx in orphan_df.index:
+                            cliente = orphan_df.loc[client_idx]
+                            dettagli_rows.append({
+                                'Step_Rimozione': removed,
+                                'Ricevente': receiver,
+                                'Cliente_Index': client_idx,
+                                'Ragione_Sociale': cliente.get('ragione sociale', 'N/D'),
+                                'Sigla': cliente.get('sigla', 'N/D'),
+                                'Classe': cliente.get('classe', 'N/D'),
+                                'Volume': cliente.get(col_vol, 0),
+                                'Distanza_Ricevente_km': round(dist, 2),
+                                'Lat': cliente.get('latitudine', ''),
+                                'Lon': cliente.get('longitudine', '')
+                            })
+        if dettagli_rows:
+            pd.DataFrame(dettagli_rows).to_excel(writer, sheet_name='Dettaglio Riassegnazioni', index=False)
+
+        # 5. Variazioni
+        variazioni = []
+        for rep in all_reps:
+            init_row = init_sheet[init_sheet['sales_rep'] == rep]
+            final_row = final_sheet[final_sheet['sales_rep'] == rep]
+            init_vals = init_row.iloc[0] if len(init_row) > 0 else None
+            final_vals = final_row.iloc[0] if len(final_row) > 0 else None
+
+            row = {'Venditore': rep}
+            for m, label in zip(metrics, metric_labels):
+                v_init = init_vals[m] if init_vals is not None else 0
+                v_final = final_vals[m] if final_vals is not None else 0
+                row[f"{label}_INI"] = v_init
+                row[f"{label}_FIN"] = v_final
+                if abs(v_init) > 0.001:
+                    row[f"{label}_DELTA_%"] = round(((v_final - v_init) / v_init) * 100, 2)
+                else:
+                    row[f"{label}_DELTA_%"] = 0.0 if abs(v_final) < 0.001 else 999.0
+            variazioni.append(row)
+        pd.DataFrame(variazioni).to_excel(writer, sheet_name='Variazioni', index=False)
+
+        # 6. Riepilogo Step
+        if reassignment_history:
+            pd.DataFrame(reassignment_history).to_excel(writer, sheet_name='Riepilogo Step', index=False)
+
+    output.seek(0)
+    return output
+
+# =============================================================================
 # INTERFACCIA
 # =============================================================================
 def main():
@@ -553,6 +818,14 @@ def main():
     if 'abc_vals' not in st.session_state: st.session_state.abc_vals = None
     if 'min_vol' not in st.session_state: st.session_state.min_vol = 0
     if 'max_km_filter' not in st.session_state: st.session_state.max_km_filter = 200
+
+    # --- NUOVO: stato per export avanzato ---
+    if 'initial_result' not in st.session_state: st.session_state.initial_result = None
+    if 'initial_df_work' not in st.session_state: st.session_state.initial_df_work = None
+    if 'initial_fig' not in st.session_state: st.session_state.initial_fig = None
+    if 'removal_figures' not in st.session_state: st.session_state.removal_figures = {}
+    if 'removal_details' not in st.session_state: st.session_state.removal_details = {}
+    if 'final_fig' not in st.session_state: st.session_state.final_fig = None
 
     st.markdown("""
     <style>
@@ -599,6 +872,13 @@ def main():
             st.session_state.current_df_work = None
             st.session_state.current_params = {}
             st.session_state.current_df_v = None
+            # --- reset export state ---
+            st.session_state.initial_result = None
+            st.session_state.initial_df_work = None
+            st.session_state.initial_fig = None
+            st.session_state.removal_figures = {}
+            st.session_state.removal_details = {}
+            st.session_state.final_fig = None
         try:
             df_c = pd.read_excel(uploaded, sheet_name="clienti_geocodificati")
             df_v = pd.read_excel(uploaded, sheet_name="venditori")
@@ -963,6 +1243,21 @@ def main():
         with col_btn1:
             if st.button("✅ Conferma Riassegnazione", use_container_width=True, disabled=(not selected_receivers)):
                 if selected_receivers:
+                    # --- NUOVO: cattura mappa e dettagli PRIMA di modificare lo stato ---
+                    alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
+                    fig_reassign = generate_reassignment_map(
+                        orphan_df, alloc, df_v, removed_name, selected_receivers,
+                        title=f"🔴 Step {len(st.session_state.removed_reps)+1}: {removed_name} → {', '.join(selected_receivers)}"
+                    )
+                    st.session_state.removal_figures[removed_name] = fig_reassign
+                    st.session_state.removal_details[removed_name] = {
+                        'allocation': alloc,
+                        'orphan_df': orphan_df.copy(),
+                        'receivers': selected_receivers,
+                        'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
+                    }
+                    # --- FINE NUOVO ---
+
                     df_new = apply_reassignment(
                         st.session_state.df_c_working, removed_name, selected_receivers, df_v
                     )
@@ -1086,10 +1381,20 @@ def main():
                             'active_list': active_list, 'ore_gg': ore_effettive_gg,
                             'gg_lavoro': gg_lavoro, 'dur_visita': dur_visita,
                             'max_stops': max_stops_per_day, 'reps': reps,
-                            'min_vol': st.session_state.get('min_vol', 0)
+                            'min_vol': st.session_state.get('min_vol', 0),
+                            'col_vol': col_vol
                         }
                         st.session_state.current_df_v = df_v
                         st.success("✅ Calcolo completato!")
+
+                        # --- NUOVO: cattura stato iniziale se è la prima volta ---
+                        if st.session_state.initial_result is None:
+                            st.session_state.initial_result = res.copy()
+                            st.session_state.initial_df_work = df_w.copy()
+                            st.session_state.initial_params = st.session_state.current_params.copy()
+                            st.session_state.initial_fig = build_territory_map(
+                                df_w, df_v, active_list, title="🗺️ Status Quo Iniziale"
+                            )
             except Exception as e:
                 st.error(f"❌ Errore: {e}")
 
@@ -1283,8 +1588,70 @@ def main():
                 )
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        # =============================================================================
+        # NUOVO: EXPORT AVANZATO & REPORTISTICA
+        # =============================================================================
         st.divider()
-        st.subheader("💾 Export Dati")
+        st.subheader("📦 Export Avanzato & Reportistica")
+
+        col_ex1, col_ex2, col_ex3 = st.columns(3)
+
+        with col_ex1:
+            if st.session_state.initial_fig is not None:
+                if st.button("📸 Scarica Mappa Iniziale PNG", use_container_width=True):
+                    img = fig_to_png(st.session_state.initial_fig)
+                    if img:
+                        st.download_button("⬇️ Download PNG", img, "mappa_status_quo_iniziale.png", "image/png", use_container_width=True)
+
+        with col_ex2:
+            if st.session_state.removal_figures:
+                if st.button("📸 Scarica Mappe Riassegnazioni PNG", use_container_width=True):
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for rep_name, fig in st.session_state.removal_figures.items():
+                            img = fig_to_png(fig)
+                            if img:
+                                zf.writestr(f"riassegnazione_{rep_name}.png", img)
+                    zip_buffer.seek(0)
+                    st.download_button("⬇️ Download ZIP Mappe", zip_buffer.getvalue(), "mappe_riassegnazioni.zip", "application/zip", use_container_width=True)
+
+        with col_ex3:
+            if st.button("🏁 Status Quo Finale + Export Excel", use_container_width=True, type="primary"):
+                with st.spinner("Generazione report finale..."):
+                    # Genera mappa finale
+                    final_fig = build_territory_map(
+                        st.session_state.current_df_work,
+                        st.session_state.current_df_v,
+                        st.session_state.current_params['active_list'],
+                        title="🗺️ Status Quo Finale"
+                    )
+                    st.session_state.final_fig = final_fig
+
+                    # Genera Excel
+                    excel_buffer = generate_excel_report(
+                        st.session_state.initial_result,
+                        st.session_state.current_result,
+                        st.session_state.reassignment_history,
+                        st.session_state.removal_details,
+                        st.session_state.current_params.get('col_vol', col_vol)
+                    )
+
+                    if excel_buffer:
+                        st.success("✅ Report generato!")
+                        st.download_button("📥 Scarica Excel Completo", excel_buffer,
+                                        f"downsizing_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        use_container_width=True)
+                        # Offri anche mappa finale
+                        img_final = fig_to_png(final_fig)
+                        if img_final:
+                            st.download_button("📥 Scarica Mappa Finale PNG", img_final, "mappa_status_quo_finale.png", "image/png", use_container_width=True)
+                    else:
+                        st.error("❌ Errore generazione Excel")
+
+        st.divider()
+        st.subheader("💾 Export Dati Base")
         export_df = res.copy()
         export_df['timestamp'] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
         csv = export_df.to_csv(index=False, sep=';', decimal=',')
