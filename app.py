@@ -28,7 +28,6 @@ def fmt_eu(value, decimals=0, suffix='', prefix=''):
         return str(value)
 
 def get_alert(s):
-    """Restituisce lo stato di saturazione."""
     if s > 110: return "🔴 CRITICO"
     elif s > 100: return "🟠 OVERLOAD"
     elif s > 85: return "⚠️ ATTENZIONE"
@@ -120,7 +119,6 @@ def compute_hull_coords(df_customers):
 # MODELLO BACINI POLARI + NN PER GIORNATA
 # =============================================================================
 def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_dict):
-    """Tour Nearest Neighbor per una singola giornata di lavoro."""
     n = len(giornata_df)
     if n == 0:
         return 0.0, 0.0
@@ -152,12 +150,10 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
         cur_lat = lats[best_idx]
         cur_lon = lons[best_idx]
 
-    # Ritorno a casa
     return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
     avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
     tour_km += return_km * avg_circ
 
-    # Velocità media della giornata
     speeds = [speed_dict.get(s, 45) for s in siglas]
     avg_speed = np.mean(speeds) if speeds else 45
 
@@ -166,9 +162,6 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
 
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day,
                               circuity_dict, speed_dict):
-    """
-    Modello bacini polari con tour NN per giornata.
-    """
     if len(df_customers) == 0:
         return 0.0, 0.0
 
@@ -273,7 +266,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
 
-    # Assegnazione venditori (sempre assegnazione attuale dal file Excel o da riassegnazione)
     if 'sales rep' not in df_w.columns:
         return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
     df_w['assigned_rep'] = df_w['sales rep']
@@ -291,10 +283,8 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     )
     df_w['assegnazione'] = 'attuale'
 
-    # Classificazione ABC su tutti i clienti assegnati
     df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
 
-    # Aggregati completi per venditore (inclusi D)
     agg_list = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
@@ -317,12 +307,10 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             })
     agg = pd.DataFrame(agg_list)
 
-    # Filtra clienti attivi (A,B,C) per la logica visite e km
     df_work = df_w[df_w['classe'] != 'D'].copy()
     if len(df_work) == 0:
         return None, "Nessun cliente attivo sopra la soglia minima C."
 
-    # Coordinate venditore su df_work
     df_work['rep_lat'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
     df_work['rep_lon'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
     if 'sigla' in df_v_valid.columns:
@@ -334,7 +322,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_work['freq_visite'] = df_work['classe'].map(freq_map)
     df_work['ore_visita_annue'] = (df_work['freq_visite'] * dur_visita) / 60.0
 
-    # Calcolo km e ore viaggio
     travel_data = []
     for rep in active_list:
         sub = df_work[df_work['assigned_rep'] == rep]
@@ -352,7 +339,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     travel_df = pd.DataFrame(travel_data)
     agg = agg.merge(travel_df, on='sales_rep', how='left').fillna(0)
 
-    # Ore visite aggregate
     visite_agg = df_work.groupby('assigned_rep').agg(
         ore_visite_annue=('ore_visita_annue', 'sum')
     ).reset_index().rename(columns={'assigned_rep': 'sales_rep'})
@@ -374,11 +360,6 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 # FUNZIONI DOWNSIZE
 # =============================================================================
 def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=9999):
-    """
-    Rank riceventi per combinazione distanza (dal centroide del loro bacino esistente) / saturazione.
-    La distanza media dei clienti orfani è calcolata dal centroide dei clienti che il ricevente
-    già visita, non dalla sua casa base. Questo è molto più realistico per un tour di lavoro.
-    """
     df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
     scores = []
     for rep in active_reps:
@@ -386,7 +367,6 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
         if len(rep_rows) == 0:
             continue
 
-        # --- CENTROIDE DEL BACINO ESISTENTE ---
         rep_clients = df_c[df_c['sales rep'] == rep].dropna(subset=['latitudine', 'longitudine'])
         if len(rep_clients) > 0:
             centroid_lat = rep_clients['latitudine'].mean()
@@ -396,18 +376,15 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
             centroid_lat = rep_row['latitudine']
             centroid_lon = rep_row['longitudine']
 
-        # Distanza media dai clienti orfani al centroide del bacino del ricevente
         dists = orphan_df.apply(
             lambda row: haversine_km(row['longitudine'], row['latitudine'], centroid_lon, centroid_lat),
             axis=1
         )
         avg_dist = dists.mean() if len(dists) > 0 else 9999
 
-        # Filtra per max_km
         if avg_dist > max_km:
             continue
 
-        # Saturazione attuale
         if current_result is not None and rep in current_result['sales_rep'].values:
             sat = current_result[current_result['sales_rep'] == rep]['saturazione_pct'].iloc[0]
         else:
@@ -415,7 +392,6 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
 
         cap_residua = max(0.0, 100.0 - sat)
 
-        # Score: più alto = migliore
         dist_score = max(0.0, 1.0 - avg_dist / 300.0)
         sat_score = cap_residua / 100.0
         score = 0.4 * dist_score + 0.6 * sat_score
@@ -428,11 +404,6 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
 
 
 def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
-    """
-    Preview: ogni cliente orfano va al ricevente più vicino tra i selezionati.
-    La distanza è calcolata dal centroide del bacino esistente di ogni ricevente.
-    """
-    # Calcola centroide per ogni ricevente
     v_centroids = {}
     for r in selected_receivers:
         rep_clients = df_c[df_c['sales rep'] == r].dropna(subset=['latitudine', 'longitudine'])
@@ -442,7 +413,6 @@ def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
                 rep_clients['longitudine'].mean()
             )
         else:
-            # Fallback: casa base
             rep_rows = df_v.dropna(subset=['latitudine', 'longitudine'])
             rep_rows = rep_rows[rep_rows['sales rep'] == r]
             if len(rep_rows) > 0:
@@ -471,7 +441,6 @@ def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
 
 
 def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
-    """Applica la riassegnazione: ogni cliente orfano al ricevente più vicino (dal centroide bacino)."""
     df = df_c.copy()
     orphan_mask = df['sales rep'] == removed_rep
     if not orphan_mask.any():
@@ -479,7 +448,6 @@ def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
 
     orphan_df = df[orphan_mask].copy()
 
-    # Calcola centroidi bacini riceventi
     v_centroids = {}
     for r in selected_receivers:
         rep_clients = df[df['sales rep'] == r].dropna(subset=['latitudine', 'longitudine'])
@@ -516,7 +484,6 @@ def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
 
 
 def render_html_table(headers, rows, font_size="12px"):
-    """Renderizza una tabella HTML con bordi e stile."""
     header_html = "".join([
         f'<th style="border:1px solid #555;background:#333;color:#fff;padding:6px 8px;text-align:center;font-size:{font_size};">{h}</th>'
         for h in headers
@@ -539,7 +506,6 @@ def render_html_table(headers, rows, font_size="12px"):
 # NUOVE FUNZIONI: MAPPE & EXPORT
 # =============================================================================
 
-# Config Plotly per download PNG nativo dal browser (funziona SEMPRE)
 PLOTLY_EXPORT_CONFIG = {
     'toImageButtonOptions': {
         'format': 'png',
@@ -552,8 +518,8 @@ PLOTLY_EXPORT_CONFIG = {
     'displaylogo': False
 }
 
-def build_territory_map(df_work, df_v, active_reps, title=""):
-    """Genera la mappa territori Plotly (ConvexHull + scatter clienti + home base)."""
+def build_territory_map(df_work, df_v, active_reps, title="", map_style="open-street-map"):
+    """Mappa territori con ConvexHull + scatter clienti + home base (pin nero)."""
     df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
     fig = go.Figure()
     if len(df_map) == 0:
@@ -569,20 +535,20 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
             if lon_h is not None:
                 fig.add_trace(go.Scattermapbox(
                     mode='lines', lon=lon_h, lat=lat_h,
-                    line=dict(width=1.5, color=rep_colors[rep]),
+                    line=dict(width=2, color=rep_colors[rep]),
                     fill='toself', fillcolor=rep_colors[rep],
-                    opacity=0.25,
+                    opacity=0.30,
                     name=f"Zona {rep}",
                     hoverinfo='name'
                 ))
 
     classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
-    for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
+    for classe, color, size in [('A', classe_colors['A'], 7), ('B', classe_colors['B'], 6), ('C', classe_colors['C'], 5)]:
         df_cl = df_map[df_map['classe'] == classe]
         if len(df_cl) > 0:
             fig.add_trace(go.Scattermapbox(
                 lat=df_cl['latitudine'], lon=df_cl['longitudine'],
-                mode='markers', marker=dict(size=size, color=color, opacity=0.8),
+                mode='markers', marker=dict(size=size, color=color, opacity=0.9, line=dict(width=1, color='white')),
                 name=f"Classe {classe}",
                 text=df_cl['assigned_rep'].values,
                 hoverinfo='name+text'
@@ -594,17 +560,17 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
             lat=df_v_active['latitudine'],
             lon=df_v_active['longitudine'],
             mode='markers',
-            marker=dict(size=14, color='black', opacity=0.9),
-            name='🏠 Home Base',
+            marker=dict(size=16, symbol='marker', color='black', opacity=0.95, line=dict(width=2, color='white')),
+            name='📍 Home Base',
             hoverinfo='name'
         ))
 
     fig.update_layout(
-        mapbox_style="carto-positron",
+        mapbox_style=map_style,
         mapbox_zoom=5.5,
         mapbox_center=dict(lat=42.5, lon=12.5),
-        margin=dict(r=0, t=30, l=0, b=120),
-        height=650,
+        margin=dict(r=0, t=40, l=0, b=120),
+        height=700,
         title=title,
         legend=dict(
             orientation="h",
@@ -620,18 +586,18 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
     return fig
 
 
-def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title=""):
-    """Mappa di riassegnazione con frecce cliente → ricevente e home base venditore rimosso."""
+def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title="", map_style="open-street-map"):
+    """Mappa step con frecce cliente→ricevente, home base rimosso (X), riceventi (pin)."""
     fig = go.Figure()
 
-    # Home base venditore rimosso (X nera)
+    # Home base venditore rimosso (X nera grande)
     removed_home = df_v[df_v['sales rep'] == removed_rep].dropna(subset=['latitudine', 'longitudine'])
     if len(removed_home) > 0:
         fig.add_trace(go.Scattermapbox(
             lat=removed_home['latitudine'].tolist(),
             lon=removed_home['longitudine'].tolist(),
             mode='markers',
-            marker=dict(size=20, color='black', symbol='x', opacity=0.9),
+            marker=dict(size=22, symbol='x', color='black', line=dict(width=2, color='white'), opacity=0.95),
             name=f'❌ {removed_rep} (rimosso)'
         ))
 
@@ -644,33 +610,31 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
         recv_lat = recv_home.iloc[0]['latitudine']
         recv_lon = recv_home.iloc[0]['longitudine']
 
-        # Home base ricevente
+        # Home base ricevente (pin colorato)
         fig.add_trace(go.Scattermapbox(
             lat=[recv_lat],
             lon=[recv_lon],
             mode='markers',
-            marker=dict(size=14, color=color, opacity=0.9),
-            name=f'🏠 {receiver}'
+            marker=dict(size=16, symbol='marker', color=color, opacity=0.95, line=dict(width=2, color='white')),
+            name=f'📍 {receiver}'
         ))
 
-        # Clienti assegnati a questo ricevente
+        # Clienti assegnati + frecce
         if receiver in allocation and len(allocation[receiver]) > 0:
             assigned_indices = [idx for idx, _ in allocation[receiver]]
             sub = orphan_df.loc[assigned_indices]
 
-            # Linee (frecce) da cliente a ricevente
             for idx, row in sub.iterrows():
                 fig.add_trace(go.Scattermapbox(
                     mode='lines',
                     lat=[row['latitudine'], recv_lat],
                     lon=[row['longitudine'], recv_lon],
-                    line=dict(width=1.5, color=color),
-                    opacity=0.5,
+                    line=dict(width=2, color=color),
+                    opacity=0.6,
                     showlegend=False,
                     hoverinfo='skip'
                 ))
 
-            # Marker clienti orfani
             hover_text = []
             for idx, row in sub.iterrows():
                 nome = row.get('ragione sociale', row.get('cliente', f'Cliente {idx}'))
@@ -680,18 +644,18 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
                 lat=sub['latitudine'],
                 lon=sub['longitudine'],
                 mode='markers',
-                marker=dict(size=9, color=color, opacity=0.9),
+                marker=dict(size=10, color=color, opacity=0.9, line=dict(width=1.5, color='white')),
                 name=f'Clienti → {receiver}',
                 text=hover_text,
                 hoverinfo='text'
             ))
 
     fig.update_layout(
-        mapbox_style="carto-positron",
+        mapbox_style=map_style,
         mapbox_zoom=5.5,
         mapbox_center=dict(lat=42.5, lon=12.5),
-        margin=dict(r=0, t=40, l=0, b=120),
-        height=700,
+        margin=dict(r=0, t=50, l=0, b=120),
+        height=750,
         title=title or f"Riassegnazione: {removed_rep}",
         legend=dict(
             orientation="h",
@@ -708,10 +672,8 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
 
 
 def fig_to_png(fig):
-    """Converte figura Plotly in bytes PNG. Richiede kaleido."""
     try:
         import plotly.io as pio
-        # Test se kaleido è davvero disponibile
         pio.to_image(go.Figure(), format='png')
         img_bytes = pio.to_image(fig, format="png", width=1600, height=1000, scale=2)
         return img_bytes
@@ -720,7 +682,6 @@ def fig_to_png(fig):
 
 
 def fig_to_html_bytes(fig):
-    """Converte figura Plotly in bytes HTML interattivo (fallback senza kaleido)."""
     buffer = BytesIO()
     fig.write_html(buffer, include_plotlyjs='cdn')
     buffer.seek(0)
@@ -728,22 +689,17 @@ def fig_to_html_bytes(fig):
 
 
 def generate_excel_report(initial_result, final_result, reassignment_history, removal_details, col_vol):
-    """Genera Excel multi-foglio: Iniziale, Finale, Confronto, Dettaglio, Variazioni."""
     if initial_result is None or final_result is None:
         return None
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 1. Stato Iniziale
         init_sheet = initial_result.copy()
         init_sheet.to_excel(writer, sheet_name='Stato Iniziale', index=False)
 
-        # 2. Stato Finale
         final_sheet = final_result.copy()
         final_sheet.to_excel(writer, sheet_name='Stato Finale', index=False)
 
-        # 3. Confronto Orizzontale
-        # Colonne = venditori (prima tutti quelli iniziali, poi tutti quelli finali)
         all_reps = sorted(set(init_sheet['sales_rep'].tolist() + final_sheet['sales_rep'].tolist()))
         metrics = ['n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'n_classe_d',
                    'volume_abc', 'volume_d', 'ore_visite_annue', 'ore_viaggio_annue',
@@ -766,7 +722,6 @@ def generate_excel_report(initial_result, final_result, reassignment_history, re
         confronto_df = pd.DataFrame(confronto_data, index=metric_labels)
         confronto_df.to_excel(writer, sheet_name='Confronto Orizzontale')
 
-        # 4. Dettaglio Riassegnazioni (con provenienza)
         dettagli_rows = []
         for hist in reassignment_history:
             removed = hist['removed']
@@ -793,7 +748,6 @@ def generate_excel_report(initial_result, final_result, reassignment_history, re
         if dettagli_rows:
             pd.DataFrame(dettagli_rows).to_excel(writer, sheet_name='Dettaglio Riassegnazioni', index=False)
 
-        # 5. Variazioni
         variazioni = []
         for rep in all_reps:
             init_row = init_sheet[init_sheet['sales_rep'] == rep]
@@ -814,7 +768,6 @@ def generate_excel_report(initial_result, final_result, reassignment_history, re
             variazioni.append(row)
         pd.DataFrame(variazioni).to_excel(writer, sheet_name='Variazioni', index=False)
 
-        # 6. Riepilogo Step
         if reassignment_history:
             pd.DataFrame(reassignment_history).to_excel(writer, sheet_name='Riepilogo Step', index=False)
 
@@ -841,8 +794,9 @@ def main():
     if 'abc_vals' not in st.session_state: st.session_state.abc_vals = None
     if 'min_vol' not in st.session_state: st.session_state.min_vol = 0
     if 'max_km_filter' not in st.session_state: st.session_state.max_km_filter = 200
+    if 'map_style' not in st.session_state: st.session_state.map_style = 'open-street-map'
 
-    # --- NUOVO: stato per export avanzato ---
+    # --- stato export ---
     if 'initial_result' not in st.session_state: st.session_state.initial_result = None
     if 'initial_df_work' not in st.session_state: st.session_state.initial_df_work = None
     if 'initial_fig' not in st.session_state: st.session_state.initial_fig = None
@@ -850,7 +804,6 @@ def main():
     if 'removal_details' not in st.session_state: st.session_state.removal_details = {}
     if 'final_fig' not in st.session_state: st.session_state.final_fig = None
 
-    # --- RILEVAMENTO KALEIDO ---
     KALEIDO_AVAILABLE = False
     try:
         import plotly.io as pio
@@ -905,7 +858,6 @@ def main():
             st.session_state.current_df_work = None
             st.session_state.current_params = {}
             st.session_state.current_df_v = None
-            # --- reset export state ---
             st.session_state.initial_result = None
             st.session_state.initial_df_work = None
             st.session_state.initial_fig = None
@@ -936,7 +888,6 @@ def main():
             st.error("❌ Colonna 'sales rep' mancante nel foglio clienti.")
             return
 
-        # Inizializza working set se necessario
         if st.session_state.df_c_original is None:
             st.session_state.df_c_original = df_c.copy()
         if st.session_state.df_c_working is None:
@@ -956,6 +907,17 @@ def main():
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
+        
+        # --- NUOVO: selettore stile mappa ---
+        st.subheader("🗺️ Stile Mappa")
+        map_style = st.selectbox(
+            "Sfondo cartografico",
+            ["open-street-map", "carto-positron", "carto-darkmatter"],
+            index=0,
+            help="open-street-map = colori e confini vividi; carto-positron = grigio chiaro; carto-darkmatter = scuro ad alto contrasto"
+        )
+        st.session_state.map_style = map_style
+        
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
         removed_reps = st.session_state.get('removed_reps', [])
@@ -970,12 +932,13 @@ def main():
                     rep_status[r] = st.checkbox(r, value=default_val, key=f"rep_{r}")
 
     # =============================================================================
-    # DOPO SIDEBAR: usa il working set come fonte di verità
+    # DOPO SIDEBAR
     # =============================================================================
     df_c = st.session_state.df_c_working
+    map_style = st.session_state.map_style
 
     # =============================================================================
-    # RILEVAMENTO RIMOZIONE VENDITORE
+    # RILEVAMENTO RIMOZIONE
     # =============================================================================
     if uploaded and not st.session_state.get('pending_removal'):
         for r in reps:
@@ -1027,7 +990,6 @@ def main():
                     st.rerun()
             st.stop()
 
-        # --- TABELLA CLIENTI ORFANI (ORIZZONTALE) ---
         orphan_df = classify_abc(orphan_df, col_vol, 
                                   st.session_state.abc_vals['da_a'],
                                   st.session_state.abc_vals['da_b'],
@@ -1045,7 +1007,6 @@ def main():
 
         st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
 
-        # Tabella orizzontale: colonne = classi con emoji colorati, righe = metriche
         orphan_headers = ['Metrica', '🟢 Cliente A', '🟡 Cliente B', '🔴 Cliente C', '⚫ Cliente D', '🔵 Totali']
         orphan_rows = [
             ['N. clienti', str(n_a), str(n_b), str(n_c), str(n_d), f'**{n_orfani}**'],
@@ -1055,12 +1016,10 @@ def main():
         st.markdown(render_html_table(orphan_headers, orphan_rows, "13px"), unsafe_allow_html=True)
 
         st.divider()
-
         st.markdown("### 🎯 Seleziona i riceventi")
 
         active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
 
-        # Filtro distanza massima
         max_km = st.number_input(
             "Max distanza media (km) per considerare un ricevente",
             min_value=10, max_value=1000,
@@ -1076,7 +1035,6 @@ def main():
             st.warning(f"Nessun ricevente entro {max_km} km. Prova ad aumentare la distanza massima.")
             st.stop()
 
-        # CSS per checkbox rosse (stile sidebar)
         st.markdown("""
         <style>
         [data-testid="stCheckbox"] > label > div[role="checkbox"] {
@@ -1093,12 +1051,9 @@ def main():
         </style>
         """, unsafe_allow_html=True)
 
-        # Prepara dati riceventi base (senza saturazione futura precalcolata)
         recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
             is_suggested = i < 3
-
-            # Clienti A-B-C attuali del ricevente
             rep_current_clients = st.session_state.df_c_working[
                 st.session_state.df_c_working['sales rep'] == rep
             ].copy()
@@ -1124,17 +1079,11 @@ def main():
         edited = st.data_editor(
             pd.DataFrame(recv_data),
             column_config={
-                "Seleziona": st.column_config.CheckboxColumn(
-                    "Seleziona",
-                    help="Spunta per selezionare questo ricevente",
-                    default=False,
-                ),
+                "Seleziona": st.column_config.CheckboxColumn("Seleziona", help="Spunta per selezionare questo ricevente", default=False),
                 "Ricevente": st.column_config.TextColumn("Ricevente", disabled=True),
                 "Clienti A-B-C attuali": st.column_config.NumberColumn("Clienti A-B-C attuali", disabled=True),
                 "Sat. Attuale": st.column_config.TextColumn("Sat. Attuale", disabled=True),
-                "Distanza media (km) nuovi clienti": st.column_config.TextColumn(
-                    "Distanza media (km) nuovi clienti", disabled=True
-                ),
+                "Distanza media (km) nuovi clienti": st.column_config.TextColumn("Distanza media (km) nuovi clienti", disabled=True),
                 "Clienti A-B-C aggiuntivi": st.column_config.TextColumn("Clienti A-B-C aggiuntivi", disabled=True),
                 "Sat. Futura": st.column_config.TextColumn("Sat. Futura", disabled=True),
             },
@@ -1147,7 +1096,6 @@ def main():
 
         selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
 
-        # --- BOTTONE CALCOLO SATURAZIONE FUTURA ---
         calc_col1, calc_col2 = st.columns([1, 3])
         with calc_col1:
             calc_pressed = st.button(
@@ -1158,18 +1106,10 @@ def main():
             )
 
         if calc_pressed and selected_receivers:
-            with st.spinner("Calcolo scenario in corso... (può richiedere qualche secondo)"):
+            with st.spinner("Calcolo scenario in corso..."):
                 abc = st.session_state.abc_vals
-
-                # 1. Applica riassegnazione temporanea con SOLO i riceventi selezionati
-                df_temp = apply_reassignment(
-                    st.session_state.df_c_working, removed_name, selected_receivers, df_v
-                )
-
-                # 2. Tutti i venditori attivi dalla sidebar (inclusi i riceventi selezionati)
+                df_temp = apply_reassignment(st.session_state.df_c_working, removed_name, selected_receivers, df_v)
                 temp_active = [r for r in reps if r not in st.session_state.removed_reps and rep_status.get(r, True)]
-
-                # 3. Simulazione completa UNA SOLA VOLTA
                 temp_res, _ = run_simulation(
                     df_temp, df_v, temp_active, col_vol,
                     abc['da_a'], abc['da_b'], abc['da_c'],
@@ -1177,11 +1117,8 @@ def main():
                     dur_visita, ore_effettive_gg, gg_lavoro,
                     max_stops_per_day
                 )
-
-                # 4. Calcola allocazione per contare clienti aggiuntivi per ogni ricevente
                 alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
 
-                # 5. Estrai risultati per ogni ricevente selezionato
                 future_results = {}
                 for rep in selected_receivers:
                     fut_sat = None
@@ -1192,23 +1129,15 @@ def main():
                     if rep in alloc and len(alloc[rep]) > 0:
                         assigned_indices = [i for i, _ in alloc[rep]]
                         sub_assigned = orphan_df.loc[assigned_indices]
-                        sub_assigned = classify_abc(
-                            sub_assigned, col_vol,
-                            abc['da_a'], abc['da_b'], abc['da_c']
-                        )
+                        sub_assigned = classify_abc(sub_assigned, col_vol, abc['da_a'], abc['da_b'], abc['da_c'])
                         add_abc = int((sub_assigned['classe'].isin(['A','B','C'])).sum())
 
-                    future_results[rep] = {
-                        'fut_sat': fut_sat,
-                        'add_abc': add_abc
-                    }
+                    future_results[rep] = {'fut_sat': fut_sat, 'add_abc': add_abc}
 
-                # Salva in session state per visualizzazione
                 st.session_state[f"future_results_{removed_name}"] = future_results
                 st.session_state[f"last_selected_{removed_name}"] = sorted(selected_receivers)
             st.rerun()
 
-        # --- MOSTRA RISULTATI CALCOLATI ---
         future_results = st.session_state.get(f"future_results_{removed_name}", {})
         last_selected = st.session_state.get(f"last_selected_{removed_name}", [])
 
@@ -1225,7 +1154,7 @@ def main():
                     result_rows.append(row.to_dict())
 
             if result_rows:
-                st.markdown("#### 📊 Impatto Simulato (basato sui riceventi selezionati)")
+                st.markdown("#### 📊 Impatto Simulato")
                 result_df = pd.DataFrame(result_rows)
                 result_df = result_df[['Seleziona', 'Ricevente', 'Clienti A-B-C attuali', 
                                         'Sat. Attuale', 'Distanza media (km) nuovi clienti',
@@ -1242,45 +1171,34 @@ def main():
             st.warning("Seleziona almeno un ricevente per vedere la preview")
         else:
             alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
-
             preview_headers = ['Ricevente', 'Clienti A', 'Clienti B', 'Clienti C', 'Clienti D', 'Totale Clienti', 'Volume Totale']
             preview_rows = []
-
             for r in selected_receivers:
                 n_ass = len(alloc.get(r, []))
                 if n_ass > 0:
                     assigned_indices = [idx for idx, _ in alloc[r]]
                     sub_assigned = orphan_df.loc[assigned_indices]
-
                     na = int((sub_assigned['classe'] == 'A').sum())
                     nb = int((sub_assigned['classe'] == 'B').sum())
                     nc = int((sub_assigned['classe'] == 'C').sum())
                     nd = int((sub_assigned['classe'] == 'D').sum())
                     vol_tot = sub_assigned[col_vol].sum()
-
-                    preview_rows.append([
-                        f"**{r}**",
-                        str(na), str(nb), str(nc), str(nd),
-                        str(n_ass),
-                        fmt_eu(vol_tot)
-                    ])
-
+                    preview_rows.append([f"**{r}**", str(na), str(nb), str(nc), str(nd), str(n_ass), fmt_eu(vol_tot)])
             if preview_rows:
                 st.markdown(render_html_table(preview_headers, preview_rows, "12px"), unsafe_allow_html=True)
             else:
                 st.info("Nessun cliente assegnato ai riceventi selezionati")
 
-        # --- BOTTONI CONFERMA / ANNULLA ---
         st.divider()
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
             if st.button("✅ Conferma Riassegnazione", use_container_width=True, disabled=(not selected_receivers)):
                 if selected_receivers:
-                    # --- NUOVO: cattura mappa e dettagli PRIMA di modificare lo stato ---
                     alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
                     fig_reassign = generate_reassignment_map(
                         orphan_df, alloc, df_v, removed_name, selected_receivers,
-                        title=f"🔴 Step {len(st.session_state.removed_reps)+1}: {removed_name} → {', '.join(selected_receivers)}"
+                        title=f"🔴 Step {len(st.session_state.removed_reps)+1}: {removed_name} → {', '.join(selected_receivers)}",
+                        map_style=map_style
                     )
                     st.session_state.removal_figures[removed_name] = fig_reassign
                     st.session_state.removal_details[removed_name] = {
@@ -1289,11 +1207,8 @@ def main():
                         'receivers': selected_receivers,
                         'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
                     }
-                    # --- FINE NUOVO ---
 
-                    df_new = apply_reassignment(
-                        st.session_state.df_c_working, removed_name, selected_receivers, df_v
-                    )
+                    df_new = apply_reassignment(st.session_state.df_c_working, removed_name, selected_receivers, df_v)
                     st.session_state.df_c_working = df_new
                     st.session_state.removed_reps.append(removed_name)
                     st.session_state.reassignment_history.append({
@@ -1302,7 +1217,6 @@ def main():
                         'n_clients': n_orfani,
                         'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
                     })
-                    # Pulisci cache riassegnazione
                     st.session_state.pop(f"future_results_{removed_name}", None)
                     st.session_state.pop(f"last_selected_{removed_name}", None)
                     st.session_state.pending_removal = None
@@ -1362,7 +1276,6 @@ def main():
         }
         st.session_state.min_vol = da_c
 
-        # Preview distribuzione
         try:
             df_preview = df_c.copy()
             df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
@@ -1420,13 +1333,12 @@ def main():
                         st.session_state.current_df_v = df_v
                         st.success("✅ Calcolo completato!")
 
-                        # --- NUOVO: cattura stato iniziale se è la prima volta ---
                         if st.session_state.initial_result is None:
                             st.session_state.initial_result = res.copy()
                             st.session_state.initial_df_work = df_w.copy()
                             st.session_state.initial_params = st.session_state.current_params.copy()
                             st.session_state.initial_fig = build_territory_map(
-                                df_w, df_v, active_list, title="🗺️ Status Quo Iniziale"
+                                df_w, df_v, active_list, title="🗺️ Status Quo Iniziale", map_style=map_style
                             )
             except Exception as e:
                 st.error(f"❌ Errore: {e}")
@@ -1439,6 +1351,7 @@ def main():
         df_w = st.session_state.current_df_work
         params = st.session_state.current_params
         df_v_curr = st.session_state.get('current_df_v', df_v)
+        
         st.divider()
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -1472,27 +1385,16 @@ def main():
         disp.columns = ['Venditore', 'Stato', 'Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
 
-        # Riga TOTALE
         total_row = pd.DataFrame([{
-            'Venditore': 'TOTALE',
-            'Stato': get_alert(disp['Sat %'].mean()),
-            'Clienti': disp['Clienti'].sum(),
-            'A': disp['A'].sum(),
-            'B': disp['B'].sum(),
-            'C': disp['C'].sum(),
-            'D': disp['D'].sum(),
-            'Volumi A-B-C': disp['Volumi A-B-C'].sum(),
-            'Volumi D': disp['Volumi D'].sum(),
-            'Ore Visite': disp['Ore Visite'].sum(),
-            'Ore Viaggio': disp['Ore Viaggio'].sum(),
-            'Ore Totali': disp['Ore Totali'].sum(),
-            'Sat %': disp['Sat %'].mean(),
-            'Min/GG': disp['Min/GG'].mean(),
-            'Vis/GG': disp['Vis/GG'].mean(),
+            'Venditore': 'TOTALE', 'Stato': get_alert(disp['Sat %'].mean()),
+            'Clienti': disp['Clienti'].sum(), 'A': disp['A'].sum(), 'B': disp['B'].sum(),
+            'C': disp['C'].sum(), 'D': disp['D'].sum(), 'Volumi A-B-C': disp['Volumi A-B-C'].sum(),
+            'Volumi D': disp['Volumi D'].sum(), 'Ore Visite': disp['Ore Visite'].sum(),
+            'Ore Viaggio': disp['Ore Viaggio'].sum(), 'Ore Totali': disp['Ore Totali'].sum(),
+            'Sat %': disp['Sat %'].mean(), 'Min/GG': disp['Min/GG'].mean(), 'Vis/GG': disp['Vis/GG'].mean(),
         }])
         disp = pd.concat([disp, total_row], ignore_index=True)
 
-        # Formattazione valori
         disp_fmt = disp.copy()
         for col in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
@@ -1501,7 +1403,6 @@ def main():
         disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
         disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
 
-        # Genera HTML tabella con stile completo
         def get_sat_color(v):
             try:
                 clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
@@ -1515,7 +1416,6 @@ def main():
 
         html_rows = []
         headers = list(disp_fmt.columns)
-
         for idx, row in disp_fmt.iterrows():
             is_total = (idx == len(disp_fmt) - 1)
             cells = []
@@ -1523,20 +1423,13 @@ def main():
                 val = row[col]
                 if col == 'Sat %':
                     bg, fg = get_sat_color(val)
-                    if is_total:
-                        style = f'background-color:{bg};color:{fg};font-weight:bold;border-top:2px solid #fff;'
-                    else:
-                        style = f'background-color:{bg};color:{fg};'
+                    style = f'background-color:{bg};color:{fg};font-weight:bold;border-top:2px solid #fff;' if is_total else f'background-color:{bg};color:{fg};'
                 elif is_total:
                     style = 'background-color:#444444;color:#ffffff;font-weight:bold;border-top:2px solid #fff;'
                 else:
                     style = ''
                 cells.append(f'<td style="{style}">{val}</td>')
-
-            if is_total:
-                html_rows.append(f'<tr style="font-weight:bold;">' + ''.join(cells) + '</tr>')
-            else:
-                html_rows.append('<tr>' + ''.join(cells) + '</tr>')
+            html_rows.append(f'<tr style="font-weight:bold;">' + ''.join(cells) + '</tr>' if is_total else '<tr>' + ''.join(cells) + '</tr>')
 
         header_cells = []
         for col in headers:
@@ -1554,7 +1447,6 @@ def main():
             '<tbody>' + ''.join(html_rows) + '</tbody>'
             '</table>'
         )
-
         st.markdown(html_table, unsafe_allow_html=True)
 
         st.divider()
@@ -1574,19 +1466,19 @@ def main():
                     if lon_h is not None:
                         fig.add_trace(go.Scattermapbox(
                             mode='lines', lon=lon_h, lat=lat_h,
-                            line=dict(width=1.5, color=rep_colors[rep]),
+                            line=dict(width=2, color=rep_colors[rep]),
                             fill='toself', fillcolor=rep_colors[rep],
-                            opacity=0.25,
+                            opacity=0.30,
                             name=f"Zona {rep}",
                             hoverinfo='name'
                         ))
             classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
-            for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
+            for classe, color, size in [('A', classe_colors['A'], 7), ('B', classe_colors['B'], 6), ('C', classe_colors['C'], 5)]:
                 df_cl = df_map[df_map['classe'] == classe]
                 if len(df_cl) > 0:
                     fig.add_trace(go.Scattermapbox(
                         lat=df_cl['latitudine'], lon=df_cl['longitudine'],
-                        mode='markers', marker=dict(size=size, color=color, opacity=0.8),
+                        mode='markers', marker=dict(size=size, color=color, opacity=0.9, line=dict(width=1, color='white')),
                         name=f"Classe {classe}",
                         text=df_cl['assigned_rep'].values,
                         hoverinfo='name+text'
@@ -1599,16 +1491,16 @@ def main():
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
                     mode='markers',
-                    marker=dict(size=14, color='black', opacity=0.9),
-                    name='🏠 Home Base',
+                    marker=dict(size=16, symbol='marker', color='black', opacity=0.95, line=dict(width=2, color='white')),
+                    name='📍 Home Base',
                     hoverinfo='name'
                 ))
             fig.update_layout(
-                mapbox_style="carto-positron",
+                mapbox_style=map_style,
                 mapbox_zoom=5.5,
                 mapbox_center=dict(lat=42.5, lon=12.5),
-                margin=dict(r=0, t=30, l=0, b=120),
-                height=650,
+                margin=dict(r=0, t=40, l=0, b=120),
+                height=700,
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
@@ -1620,11 +1512,10 @@ def main():
                     borderwidth=1
                 )
             )
-            # --- NUOVO: config per export PNG nativo dal browser ---
             st.plotly_chart(fig, use_container_width=True, config=PLOTLY_EXPORT_CONFIG)
 
         # =============================================================================
-        # NUOVO: EXPORT AVANZATO & REPORTISTICA
+        # EXPORT AVANZATO
         # =============================================================================
         st.divider()
         st.subheader("📦 Export Avanzato & Reportistica")
@@ -1674,16 +1565,15 @@ def main():
         with col_ex3:
             if st.button("🏁 Status Quo Finale + Export Excel", use_container_width=True, type="primary"):
                 with st.spinner("Generazione report finale..."):
-                    # Genera mappa finale
                     final_fig = build_territory_map(
                         st.session_state.current_df_work,
                         st.session_state.current_df_v,
                         st.session_state.current_params['active_list'],
-                        title="🗺️ Status Quo Finale"
+                        title="🗺️ Status Quo Finale",
+                        map_style=map_style
                     )
                     st.session_state.final_fig = final_fig
 
-                    # Genera Excel
                     excel_buffer = generate_excel_report(
                         st.session_state.initial_result,
                         st.session_state.current_result,
@@ -1708,6 +1598,17 @@ def main():
                     else:
                         st.error("❌ Errore generazione Excel")
 
+        # =============================================================================
+        # NUOVO: CRONOLOGIA MAPPE RIASSEGNAZIONI (VISUALIZZAZIONE)
+        # =============================================================================
+        if st.session_state.removal_figures:
+            st.divider()
+            st.subheader("🗺️ Cronologia Mappe Riassegnazioni")
+            st.caption("Mappe generate ad ogni step di eliminazione. Usa la 📷 in alto a destra di ogni mappa per scaricare PNG.")
+            for rep_name, fig in st.session_state.removal_figures.items():
+                st.markdown(f"**🔴 Step: rimozione {rep_name}**")
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_EXPORT_CONFIG)
+
         st.divider()
         st.subheader("💾 Export Dati Base")
         export_df = res.copy()
@@ -1718,7 +1619,7 @@ def main():
         st.info("📂 Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
 
     # =============================================================================
-    # SALVATAGGIO STATO CHECKBOX PER RILEVAMENTO FUTURO
+    # SALVATAGGIO STATO CHECKBOX
     # =============================================================================
     if uploaded and not st.session_state.get('pending_removal'):
         st.session_state.rep_status_prev = {r: rep_status[r] for r in reps}
