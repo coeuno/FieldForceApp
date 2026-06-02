@@ -395,7 +395,6 @@ def main():
         if file_signature != st.session_state.get('last_upload_signature', ''):
             st.session_state.last_upload_signature = file_signature
             st.session_state.trigger_auto_run = True
-            st.session_state.scenarios = {}
             st.session_state.current_result = None
             st.session_state.current_df_work = None
         try:
@@ -492,7 +491,6 @@ def main():
             'da_c': da_c, 'a_c': a_c, 'freq_c': freq_c,
             'da_d': da_d, 'a_d': a_d, 'freq_d': freq_d
         }
-        # FIX: min_vol salvato in session_state per essere accessibile ovunque
         st.session_state.min_vol = da_c
 
         # Preview distribuzione
@@ -515,7 +513,6 @@ def main():
     # =============================================================================
     # LOGICA ESECUZIONE
     # =============================================================================
-    if 'scenarios' not in st.session_state: st.session_state.scenarios = {}
     if 'current_result' not in st.session_state: st.session_state.current_result = None
     if 'current_df_work' not in st.session_state: st.session_state.current_df_work = None
     if 'current_params' not in st.session_state: st.session_state.current_params = {}
@@ -576,34 +573,9 @@ def main():
             overload = len(res[res['saturazione_pct'] > 100])
             st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
         
-        # FIX: min_vol letto sempre da session_state, mai da variabile locale
         min_vol_display = st.session_state.get('min_vol', 0)
         st.info(f"📍 Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(min_vol_display)}**")
         
-        col_btn, col_name = st.columns([2, 1])
-        with col_btn:
-            if st.button("💾 Salva come Baseline", use_container_width=True):
-                st.session_state.scenarios["📍 BASELINE"] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
-                st.success("✅ Baseline salvata!")
-        with col_name:
-            nome_scen = st.text_input("Nome scenario", placeholder="Es. 19 Agenti")
-            if st.button("💾 Salva", use_container_width=True) and nome_scen:
-                st.session_state.scenarios[nome_scen] = {'result': res.copy(), 'df_work': df_w.copy(), 'params': params}
-                st.success(f"✅ '{nome_scen}' salvato!")
-        if len(st.session_state.scenarios) >= 2:
-            st.divider()
-            st.subheader("📊 Confronto Scenari")
-            sel = st.selectbox("Confronta con baseline", list(st.session_state.scenarios.keys())[1:])
-            base = st.session_state.scenarios["📍 BASELINE"]
-            other = st.session_state.scenarios[sel]
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                delta = len(other['result']) - len(base['result'])
-                st.metric("Venditori", f"{len(base['result'])} → {len(other['result'])}", f"{delta:+d}")
-            with c2:
-                st.metric("Clienti", f"{int(base['result']['n_clienti'].sum()):,} → {int(other['result']['n_clienti'].sum()):,}")
-            with c3:
-                st.metric("Sat. Media", f"{base['result']['saturazione_pct'].mean():.1f}% → {other['result']['saturazione_pct'].mean():.1f}%")
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
 
