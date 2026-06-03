@@ -87,6 +87,37 @@ PROVINCIAL_SPEED = {
     "FC": 50, "PU": 48
 }
 
+# Fattore di congestione per città metropolitane e medie
+# Le grandi città hanno traffico intenso anche su brevi tragitti
+CONGESTION_FACTOR = {
+    # Città metropolitane (circuity +60%)
+    "MI": 1.60, "RM": 1.60, "NA": 1.60, "TO": 1.60, "GE": 1.60,
+    "BO": 1.60, "FI": 1.60, "VE": 1.60, "BA": 1.60, "CT": 1.60, "PA": 1.60,
+    # Città medie (circuity +30%)
+    "BG": 1.30, "BS": 1.30, "CO": 1.30, "VA": 1.30, "VR": 1.30, "VI": 1.30,
+    "PD": 1.30, "TV": 1.30, "RO": 1.30, "PC": 1.30, "PR": 1.30, "RE": 1.30,
+    "MO": 1.30, "FE": 1.30, "RA": 1.30, "RN": 1.30, "FO": 1.30, "FC": 1.30,
+    "PU": 1.30, "AN": 1.30, "MC": 1.30, "AP": 1.30, "FM": 1.30, "PE": 1.30,
+    "CH": 1.30, "TE": 1.30, "LT": 1.30, "FR": 1.30, "VT": 1.30, "RI": 1.30,
+    "LU": 1.30, "PI": 1.30, "LI": 1.30, "PO": 1.30, "PT": 1.30, "AR": 1.30,
+    "SI": 1.30, "PG": 1.30, "TR": 1.30, "MS": 1.30, "CA": 1.30, "SS": 1.30,
+    "SV": 1.30, "IM": 1.30, "SP": 1.30, "FG": 1.30, "BT": 1.30, "BR": 1.30,
+    "TA": 1.30, "LE": 1.30, "KR": 1.30, "RG": 1.30, "SR": 1.30, "ME": 1.30,
+    "TP": 1.30, "AG": 1.30, "CL": 1.30, "EN": 1.30, "CS": 1.30, "CZ": 1.30,
+    "VV": 1.30, "RC": 1.30, "UD": 1.30, "GO": 1.30, "TS": 1.30,
+    "PN": 1.30, "BL": 1.30, "BZ": 1.30, "TN": 1.30, "AO": 1.30, "SO": 1.30,
+    "VB": 1.30, "VC": 1.30, "NO": 1.30, "BI": 1.30, "AL": 1.30, "AT": 1.30,
+    "CN": 1.30, "CB": 1.30, "IS": 1.30, "CE": 1.30, "BN": 1.30, "AV": 1.30,
+    "SA": 1.30, "PZ": 1.30, "MT": 1.30, "AQ": 1.30, "NU": 1.30, "OR": 1.30,
+    "OT": 1.30, "SU": 1.30
+}
+
+def get_effective_circuity(sigla, base_circuity_dict):
+    """Restituisce il circuity effettivo includendo congestione città."""
+    base = base_circuity_dict.get(sigla, 1.35)
+    congestion = CONGESTION_FACTOR.get(sigla, 1.0)
+    return base * congestion
+
 # =============================================================================
 # FUNZIONI CORE
 # =============================================================================
@@ -157,7 +188,7 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
                 best_idx = idx
 
         sigla = siglas[best_idx]
-        circ = circuity_dict.get(sigla, 1.35)
+        circ = get_effective_circuity(sigla, circuity_dict)
         leg_km = best_dist * circ
         tour_km += leg_km
 
@@ -175,7 +206,7 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
     end_lat, end_lon = cur_lat, cur_lon
     if return_home:
         return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
-        avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
+        avg_circ = np.mean([get_effective_circuity(s, circuity_dict) for s in siglas]) if n > 0 else 1.30
         km_ritorno = return_km * avg_circ
         tour_km += km_ritorno
         end_lat, end_lon = start_lat, start_lon
@@ -222,7 +253,7 @@ def optimize_pernotto(giornate, home_lat, home_lon, soglia_min, max_notti_week,
         g_j = giornate[i + 1]
 
         costo_attuale = g_i['km_ritorno'] + g_j['km_andata']
-        circ_h = circuity_dict.get(g_j['sigle'][0] if g_j['sigle'] else 'RM', 1.35)
+        circ_h = get_effective_circuity(g_j['sigle'][0] if g_j['sigle'] else 'RM', circuity_dict)
         dist_to_hotel = haversine_km(g_i['last_lon'], g_i['last_lat'],
                                        g_j['hotel_lon'], g_j['hotel_lat']) * circ_h
         costo_nuovo = dist_to_hotel + hotel_offset_km
@@ -253,13 +284,13 @@ def optimize_pernotto(giornate, home_lat, home_lon, soglia_min, max_notti_week,
             g_i, g_i1, g_i2 = giornate[i], giornate[i + 1], giornate[i + 2]
 
             # Notte 1: i -> i+1
-            circ1 = circuity_dict.get(g_i1['sigle'][0] if g_i1['sigle'] else 'RM', 1.35)
+            circ1 = get_effective_circuity(g_i1['sigle'][0] if g_i1['sigle'] else 'RM', circuity_dict)
             dist1 = haversine_km(g_i['last_lon'], g_i['last_lat'],
                                  g_i1['hotel_lon'], g_i1['hotel_lat']) * circ1
             risp1 = (g_i['km_ritorno'] + g_i1['km_andata']) - (dist1 + hotel_offset_km)
 
             # Notte 2: i+1 -> i+2
-            circ2 = circuity_dict.get(g_i2['sigle'][0] if g_i2['sigle'] else 'RM', 1.35)
+            circ2 = get_effective_circuity(g_i2['sigle'][0] if g_i2['sigle'] else 'RM', circuity_dict)
             dist2 = haversine_km(g_i1['last_lon'], g_i1['last_lat'],
                                  g_i2['hotel_lon'], g_i2['hotel_lat']) * circ2
             risp2 = (g_i1['km_ritorno'] + g_i2['km_andata']) - (dist2 + hotel_offset_km)
@@ -292,7 +323,7 @@ def optimize_pernotto(giornate, home_lat, home_lon, soglia_min, max_notti_week,
             # Rimuovi ritorno di g_curr
             delta_km = -g_curr['km_ritorno']
             # Aggiungi spostamento verso hotel di g_next
-            circ = circuity_dict.get(g_next['sigle'][0] if g_next['sigle'] else 'RM', 1.35)
+            circ = get_effective_circuity(g_next['sigle'][0] if g_next['sigle'] else 'RM', circuity_dict)
             dist_to_hotel = haversine_km(g_curr['last_lon'], g_curr['last_lat'],
                                          g_next['hotel_lon'], g_next['hotel_lat']) * circ
             delta_km += dist_to_hotel
@@ -433,6 +464,7 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     total_km = sum(g['km'] for g in giornate)
     total_ore = sum(g['ore_viaggio'] for g in giornate)
 
+    n_pernotti = 0
     # --- APPLICA PERNOTTO ---
     if pernotto_attivo and len(giornate) >= 2:
         delta_km, delta_ore, dettaglio_pernotto = optimize_pernotto(
@@ -443,7 +475,8 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
         total_km += delta_km
         total_ore += delta_ore
 
-    return total_km, total_ore, giornate
+    n_pernotti = sum(1 for m in dettaglio_pernotto if m['notti_in_missione'] > 0) if pernotto_attivo else 0
+    return total_km, total_ore, giornate, n_pernotti
 
 
 def compute_alpha_shape(df_customers, alpha_factor=0.15):
@@ -672,19 +705,21 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         if len(sub) > 0:
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
-            km_totali, ore_viag, _ = calculate_travel_km_tours(
+            km_totali, ore_viag, _, n_pernotti = calculate_travel_km_tours(
                 sub, rep_lat, rep_lon, max_stops_per_day,
                 PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED,
                 pernotto_attivo, soglia_min_pernotto,
                 max_notti_week, max_notti_consecutive,
                 hotel_offset_km, gg_lavoro
             )
-            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
+            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali, 'n_pernotti_annui': n_pernotti})
         else:
-            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0, 'km_annui': 0.0})
+            travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': 0.0, 'km_annui': 0.0, 'n_pernotti_annui': 0})
 
     travel_df = pd.DataFrame(travel_data)
     agg = agg.merge(travel_df, on='sales_rep', how='left').fillna(0)
+    # km medi al giorno
+    agg['km_giorno'] = agg['km_annui'] / gg_lavoro
 
     # Ore visite aggregate
     visite_agg = df_work.groupby('assigned_rep').agg(
@@ -1728,9 +1763,9 @@ def main():
 
         disp = res[['sales_rep', 'stato', 'n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'n_classe_d',
                     'volume_abc', 'volume_d', 'ore_visite_annue', 'ore_viaggio_annue', 'ore_totali_annue',
-                    'saturazione_pct', 'driving_min_giorno', 'visite_giorno']].copy()
+                    'saturazione_pct', 'driving_min_giorno', 'visite_giorno', 'km_giorno', 'n_pernotti_annui']].copy()
         disp.columns = ['Venditore', 'Stato', 'Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D',
-                        'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG']
+                        'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG', 'km/GG', 'Pernotti']
 
         # Riga TOTALE
         total_row = pd.DataFrame([{
@@ -1749,6 +1784,8 @@ def main():
             'Sat %': disp['Sat %'].mean(),
             'Min/GG': disp['Min/GG'].mean(),
             'Vis/GG': disp['Vis/GG'].mean(),
+            'km/GG': disp['km/GG'].mean(),
+            'Pernotti': disp['Pernotti'].sum(),
         }])
         disp = pd.concat([disp, total_row], ignore_index=True)
 
@@ -1760,6 +1797,8 @@ def main():
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 1))
         disp_fmt['Sat %'] = disp_fmt['Sat %'].apply(lambda x: fmt_eu(x, 1, '%'))
         disp_fmt['Vis/GG'] = disp_fmt['Vis/GG'].apply(lambda x: fmt_eu(x, 2))
+        disp_fmt['km/GG'] = disp_fmt['km/GG'].apply(lambda x: fmt_eu(x, 1))
+        disp_fmt['Pernotti'] = disp_fmt['Pernotti'].apply(lambda x: fmt_eu(x, 0))
 
         # Genera HTML tabella con stile completo
         def get_sat_color(v):
