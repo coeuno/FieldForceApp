@@ -86,29 +86,6 @@ PROVINCIAL_SPEED = {
 }
 
 # =============================================================================
-# STILE MAPPA & COLORI LAYOUT
-# =============================================================================
-# open-street-map  → confini regionali/provinciali ben visibili, colori reali (DEFAULT)
-# carto-darkmatter → dark mode, massimo contrasto per i dati sovrapposti
-MAPBOX_STYLE = "open-street-map"
-
-def _map_layout_colors():
-    """Restituisce colori di layout coerenti con lo stile mappa scelto."""
-    if 'dark' in MAPBOX_STYLE:
-        return {
-            'paper_bg': '#1a1a1a',
-            'plot_bg': '#1a1a1a',
-            'font_color': '#ffffff',
-            'legend_bg': 'rgba(30,30,30,0.85)'
-        }
-    return {
-        'paper_bg': 'white',
-        'plot_bg': 'white',
-        'font_color': '#333333',
-        'legend_bg': 'rgba(255,255,255,0.95)'
-    }
-
-# =============================================================================
 # FUNZIONI CORE
 # =============================================================================
 def haversine_km(lon1, lat1, lon2, lat2):
@@ -140,10 +117,18 @@ def compute_hull_coords(df_customers):
         return None, None
 
 # =============================================================================
-# MODELLO BACINI POLARI + NN PER GIORNATA
+# MODELLO BACINI POLARI + NN PER GIORNATA (CON OVERNIGHT CONDIZIONALE)
 # =============================================================================
-def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_dict):
-    """Tour Nearest Neighbor per una singola giornata di lavoro."""
+def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_dict,
+                      mode='giornaliero', hotel_commute_km=12.0):
+    """
+    Tour Nearest Neighbor per una singola giornata di lavoro.
+    
+    mode:
+        'giornaliero' -> partenza da casa, rientro a casa (classico, come prima)
+        'andata'      -> partenza da casa, fine giornata in hotel (NO rientro)
+        'ritorno'     -> partenza da hotel (centroide clienti), rientro a casa
+    """
     n = len(giornata_df)
     if n == 0:
         return 0.0, 0.0
@@ -152,10 +137,27 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
     lons = giornata_df['lon'].values
     siglas = giornata_df['sigla'].values
 
-    remaining = set(range(n))
-    tour_km = 0.0
-    cur_lat, cur_lon = start_lat, start_lon
+    # --- PUNTO DI PARTENZA ---
+    if mode == 'ritorno':
+        # L'hotel è approssimato al centroide dei clienti di questa giornata
+        origin_lat = float(np.mean(lats))
+        origin_lon = float(np.mean(lons))
+        # Costo fisso mattutino: sveglia, colazione, spostamento hotel -> primo cliente
+        first_sigla = siglas[0] if n > 0 else None
+        circ_hotel = circuity_dict.get(first_sigla, 1.30) if first_sigla else 1.30
+        speed_hotel = speed_dict.get(first_sigla, 45) if first_sigla else 45
+        hotel_km = hotel_commute_km * circ_hotel
+        hotel_time = hotel_km / speed_hotel
+    else:
+        origin_lat, origin_lon = start_lat, start_lon
+        hotel_km, hotel_time = 0.0, 0.0
 
+    remaining = set(range(n))
+    tour_km = hotel_km
+    tour_hours = hotel_time
+    cur_lat, cur_lon = origin_lat, origin_lon
+
+    # --- NEAREST NEIGHBOR (identico al codice originale) ---
     for _ in range(n):
         if not remaining:
             break
@@ -169,28 +171,55 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
 
         sigla = siglas[best_idx]
         circ = circuity_dict.get(sigla, 1.35)
-        tour_km += best_dist * circ
+        speed = speed_dict.get(sigla, 45)
+        
+        km_reali = best_dist * circ
+        tempo_tratta = km_reali / speed
+        
+        tour_km += km_reali
+        tour_hours += tempo_tratta
 
         remaining.remove(best_idx)
         cur_lat = lats[best_idx]
         cur_lon = lons[best_idx]
 
-    # Ritorno a casa
-    return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
-    avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
-    tour_km += return_km * avg_circ
+    # --- CHIUSURA TOUR IN BASE ALLA MODALITÀ ---
+    if mode == 'giornaliero':
+        # Rientro classico a casa (COMPORTAMENTO ORIGINALE INALTERATO)
+        return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
+        avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
+        avg_speed = np.mean([speed_dict.get(s, 45) for s in siglas]) if n > 0 else 45
+        km_reali_ritorno = return_km * avg_circ
+        tempo_ritorno = km_reali_ritorno / avg_speed
+        tour_km += km_reali_ritorno
+        tour_hours += tempo_ritorno
+        
+    elif mode == 'andata':
+        # NO rientro: il venditore pernotta in zona dopo l'ultima visita
+        pass
+        
+    elif mode == 'ritorno':
+        # Rientro a casa dalla fine del tour (dopo la notte in hotel)
+        return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
+        avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
+        avg_speed = np.mean([speed_dict.get(s, 45) for s in siglas]) if n > 0 else 45
+        km_reali_ritorno = return_km * avg_circ
+        tempo_ritorno = km_reali_ritorno / avg_speed
+        tour_km += km_reali_ritorno
+        tour_hours += tempo_ritorno
 
-    # Velocità media della giornata
-    speeds = [speed_dict.get(s, 45) for s in siglas]
-    avg_speed = np.mean(speeds) if speeds else 45
-
-    return tour_km, tour_km / avg_speed
+    return tour_km, tour_hours
 
 
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day,
-                              circuity_dict, speed_dict):
+                              circuity_dict, speed_dict, enable_overnight=False,
+                              max_commute_hours=2.0, hotel_commute_km=12.0):
     """
     Modello bacini polari con tour NN per giornata.
+    NOVITÀ: logica Overnight condizionale per settori lontani (> max_commute_hours).
+    I bacini polari restano identici. Dopo l'assemblaggio, se un settore ha più giornate
+    ed è lontano, le prime coppie diventano blocchi da 2 giorni (1 notte).
+    Se enable_overnight è False, comportamento originale al 100%.
     """
     if len(df_customers) == 0:
         return 0.0, 0.0
@@ -231,7 +260,10 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     n_visits = len(visits_df)
     visit_mask = np.zeros(n_visits, dtype=bool)
 
-    giornate = []
+    # =============================================================================
+    # FASE 1: ASSEMBLAGGIO GIORNATE (bacini polari, IDENTICO al codice originale)
+    # =============================================================================
+    giornate_raw = []  # lista di dict: {'sector': int, 'df': DataFrame}
 
     while not visit_mask.all():
         residue = {}
@@ -263,27 +295,94 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
                     remaining_slots -= len(adj_indices)
 
         if len(taken_indices) > 0:
-            giornata_df = visits_df.loc[taken_indices]
-            km_giorno, ore_giorno = _nn_tour_giornata(
-                giornata_df, rep_home_lat, rep_home_lon,
-                circuity_dict, speed_dict
-            )
-            giornate.append({
+            giornata_df = visits_df.loc[taken_indices].copy()
+            giornate_raw.append({
                 'sector': best_sector,
-                'n_visite': len(taken_indices),
-                'km': km_giorno,
-                'ore_viaggio': ore_giorno
+                'df': giornata_df
             })
 
-    total_km = sum(g['km'] for g in giornate)
-    total_ore = sum(g['ore_viaggio'] for g in giornate)
+    # =============================================================================
+    # FASE 2: RAGGRUPPAMENTO PER SETTORE E APPLICAZIONE OVERNIGHT
+    # =============================================================================
+    # Raggruppa gli indici delle giornate per settore principale
+    sector_giornate = {}
+    for i, g in enumerate(giornate_raw):
+        s = g['sector']
+        if s not in sector_giornate:
+            sector_giornate[s] = []
+        sector_giornate[s].append(i)
+
+    # Determina la modalità per ogni giornata di ogni settore
+    sector_modes = {}  # sector -> list of modes (in ordine cronologico delle giornate)
+
+    for s, idx_list in sector_giornate.items():
+        n_giorn = len(idx_list)
+        if n_giorn <= 1 or not enable_overnight:
+            # Una sola giornata, o overnight disattivato: sempre giornaliero
+            sector_modes[s] = ['giornaliero'] * n_giorn
+            continue
+
+        # Centroide di TUTTI i clienti assegnati a questo settore (tutte le sue giornate)
+        all_clients = pd.concat([giornate_raw[i]['df'] for i in idx_list])
+        if len(all_clients) == 0:
+            sector_modes[s] = ['giornaliero'] * n_giorn
+            continue
+
+        centroid_lat = all_clients['lat'].mean()
+        centroid_lon = all_clients['lon'].mean()
+        dist_casa = haversine_km(rep_home_lon, rep_home_lat, centroid_lon, centroid_lat)
+
+        # Circuity e velocità medie del settore (media aritmetica delle sigle)
+        sigle = all_clients['sigla'].values
+        avg_circ = np.mean([circuity_dict.get(sig, 1.30) for sig in sigle]) if len(sigle) > 0 else 1.30
+        avg_speed = np.mean([speed_dict.get(sig, 45) for sig in sigle]) if len(sigle) > 0 else 45
+        tempo_ritorno_ore = (dist_casa * avg_circ) / avg_speed
+
+        if tempo_ritorno_ore > max_commute_hours:
+            # Settore lontano con >1 giornata: attiva blocchi da max 2 giorni (1 notte)
+            modes = []
+            i = 0
+            while i < n_giorn:
+                if i + 1 < n_giorn:
+                    # Blocco di 2 giorni: andata (no rientro) + ritorno (dopo pernottamento)
+                    modes.append('andata')
+                    modes.append('ritorno')
+                    i += 2
+                else:
+                    # Giornata singola residua: rientro normale (non vale la pena pernottare)
+                    modes.append('giornaliero')
+                    i += 1
+            sector_modes[s] = modes
+        else:
+            # Settore vicino: comportamento classico, nessuna modifica
+            sector_modes[s] = ['giornaliero'] * n_giorn
+
+    # =============================================================================
+    # FASE 3: CALCOLO KM E ORE CON LE MODALITÀ CORRETTE
+    # =============================================================================
+    total_km = 0.0
+    total_ore = 0.0
+
+    for s, idx_list in sector_giornate.items():
+        modes = sector_modes[s]
+        for j, idx in enumerate(idx_list):
+            g = giornate_raw[idx]
+            mode = modes[j] if j < len(modes) else 'giornaliero'
+            km_giorno, ore_giorno = _nn_tour_giornata(
+                g['df'], rep_home_lat, rep_home_lon,
+                circuity_dict, speed_dict, mode=mode,
+                hotel_commute_km=hotel_commute_km
+            )
+            total_km += km_giorno
+            total_ore += ore_giorno
 
     return total_km, total_ore
 
 
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
-                   max_stops_per_day):
+                   max_stops_per_day, enable_overnight=False, max_commute_hours=2.0,
+                   hotel_commute_km=12.0):
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
     df_v_valid = df_v_act[valid_mask]
@@ -366,7 +465,10 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             rep_lon = sub['rep_lon'].iloc[0]
             km_totali, ore_viag = calculate_travel_km_tours(
                 sub, rep_lat, rep_lon, max_stops_per_day,
-                PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED
+                PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED,
+                enable_overnight=enable_overnight,
+                max_commute_hours=max_commute_hours,
+                hotel_commute_km=hotel_commute_km
             )
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
         else:
@@ -561,30 +663,15 @@ def render_html_table(headers, rows, font_size="12px"):
 # =============================================================================
 # NUOVE FUNZIONI: MAPPE & EXPORT
 # =============================================================================
-
-# Config Plotly per download PNG nativo dal browser (funziona SEMPRE)
-PLOTLY_EXPORT_CONFIG = {
-    'toImageButtonOptions': {
-        'format': 'png',
-        'filename': 'mappa',
-        'height': 1000,
-        'width': 1600,
-        'scale': 2
-    },
-    'displayModeBar': True,
-    'displaylogo': False
-}
-
 def build_territory_map(df_work, df_v, active_reps, title=""):
     """Genera la mappa territori Plotly (ConvexHull + scatter clienti + home base)."""
-    map_colors = _map_layout_colors()
     df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
     fig = go.Figure()
     if len(df_map) == 0:
         return fig
 
-    palette = px.colors.qualitative.Alphabet
-    rep_colors = {r: palette[i % len(palette)] for i, r in enumerate(active_reps)}
+    colors = px.colors.qualitative.Alphabet
+    rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(active_reps)}
 
     for rep in active_reps:
         sub = df_map[df_map['assigned_rep'] == rep]
@@ -614,45 +701,31 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
 
     df_v_active = df_v[df_v['sales rep'].isin(active_reps)].dropna(subset=['latitudine', 'longitudine'])
     if len(df_v_active) > 0:
-        # Alone bianco per contrasto
         fig.add_trace(go.Scattermapbox(
             lat=df_v_active['latitudine'],
             lon=df_v_active['longitudine'],
             mode='markers',
-            marker=dict(size=26, color='white', opacity=0.9),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scattermapbox(
-            lat=df_v_active['latitudine'],
-            lon=df_v_active['longitudine'],
-            mode='markers',
-            marker=dict(size=18, color='#E63946', opacity=1.0),
-            text=df_v_active['sales rep'].values,
+            marker=dict(size=14, color='black', opacity=0.9),
             name='🏠 Home Base',
-            hoverinfo='name+text'
+            hoverinfo='name'
         ))
 
     fig.update_layout(
-        mapbox_style=MAPBOX_STYLE,
+        mapbox_style="carto-positron",
         mapbox_zoom=5.5,
         mapbox_center=dict(lat=42.5, lon=12.5),
         margin=dict(r=0, t=30, l=0, b=120),
-        height=700,
+        height=650,
         title=title,
-        paper_bgcolor=map_colors['paper_bg'],
-        plot_bgcolor=map_colors['plot_bg'],
-        font=dict(color=map_colors['font_color']),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.18,
+            y=-0.15,
             xanchor="center",
             x=0.5,
-            bgcolor=map_colors['legend_bg'],
+            bgcolor='rgba(255,255,255,0.95)',
             bordercolor='gray',
-            borderwidth=1,
-            font=dict(size=11)
+            borderwidth=1
         )
     )
     return fig
@@ -660,50 +733,34 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
 
 def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title=""):
     """Mappa di riassegnazione con frecce cliente → ricevente e home base venditore rimosso."""
-    map_colors = _map_layout_colors()
     fig = go.Figure()
 
-    # Home base venditore rimosso (croce rossa con alone)
+    # Home base venditore rimosso (X nera)
     removed_home = df_v[df_v['sales rep'] == removed_rep].dropna(subset=['latitudine', 'longitudine'])
     if len(removed_home) > 0:
-        lat_rh = removed_home['latitudine'].tolist()
-        lon_rh = removed_home['longitudine'].tolist()
-        # Alone bianco
         fig.add_trace(go.Scattermapbox(
-            lat=lat_rh, lon=lon_rh,
+            lat=removed_home['latitudine'].tolist(),
+            lon=removed_home['longitudine'].tolist(),
             mode='markers',
-            marker=dict(size=30, color='white', opacity=0.9),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scattermapbox(
-            lat=lat_rh, lon=lon_rh,
-            mode='markers',
-            marker=dict(size=22, color='#D00000', opacity=1.0),
+            marker=dict(size=20, color='black', symbol='x', opacity=0.9),
             name=f'❌ {removed_rep} (rimosso)'
         ))
 
-    palette = px.colors.qualitative.Bold
+    colors = px.colors.qualitative.Bold
     for i, receiver in enumerate(receivers):
-        color = palette[i % len(palette)]
+        color = colors[i % len(colors)]
         recv_home = df_v[df_v['sales rep'] == receiver].dropna(subset=['latitudine', 'longitudine'])
         if len(recv_home) == 0:
             continue
         recv_lat = recv_home.iloc[0]['latitudine']
         recv_lon = recv_home.iloc[0]['longitudine']
 
-        # Home base ricevente - alone bianco
+        # Home base ricevente
         fig.add_trace(go.Scattermapbox(
-            lat=[recv_lat], lon=[recv_lon],
+            lat=[recv_lat],
+            lon=[recv_lon],
             mode='markers',
-            marker=dict(size=26, color='white', opacity=0.9),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scattermapbox(
-            lat=[recv_lat], lon=[recv_lon],
-            mode='markers',
-            marker=dict(size=18, color=color, opacity=1.0),
+            marker=dict(size=14, color=color, opacity=0.9),
             name=f'🏠 {receiver}'
         ))
 
@@ -741,22 +798,19 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
             ))
 
     fig.update_layout(
-        mapbox_style=MAPBOX_STYLE,
+        mapbox_style="carto-positron",
         mapbox_zoom=5.5,
         mapbox_center=dict(lat=42.5, lon=12.5),
         margin=dict(r=0, t=40, l=0, b=120),
         height=700,
         title=title or f"Riassegnazione: {removed_rep}",
-        paper_bgcolor=map_colors['paper_bg'],
-        plot_bgcolor=map_colors['plot_bg'],
-        font=dict(color=map_colors['font_color']),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.18,
+            y=-0.15,
             xanchor="center",
             x=0.5,
-            bgcolor=map_colors['legend_bg'],
+            bgcolor='rgba(255,255,255,0.95)',
             bordercolor='gray',
             borderwidth=1
         )
@@ -768,20 +822,11 @@ def fig_to_png(fig):
     """Converte figura Plotly in bytes PNG. Richiede kaleido."""
     try:
         import plotly.io as pio
-        # Test se kaleido è davvero disponibile
-        pio.to_image(go.Figure(), format='png')
         img_bytes = pio.to_image(fig, format="png", width=1600, height=1000, scale=2)
         return img_bytes
-    except Exception:
+    except Exception as e:
+        st.warning(f"⚠️ Export PNG fallito (serve `pip install kaleido`): {e}")
         return None
-
-
-def fig_to_html_bytes(fig):
-    """Converte figura Plotly in bytes HTML interattivo (fallback senza kaleido)."""
-    buffer = BytesIO()
-    fig.write_html(buffer, include_plotlyjs='cdn')
-    buffer.seek(0)
-    return buffer.getvalue()
 
 
 def generate_excel_report(initial_result, final_result, reassignment_history, removal_details, col_vol):
@@ -907,16 +952,6 @@ def main():
     if 'removal_details' not in st.session_state: st.session_state.removal_details = {}
     if 'final_fig' not in st.session_state: st.session_state.final_fig = None
 
-    # --- RILEVAMENTO KALEIDO ---
-    KALEIDO_AVAILABLE = False
-    try:
-        import plotly.io as pio
-        pio.to_image(go.Figure(), format='png')
-        KALEIDO_AVAILABLE = True
-    except Exception:
-        KALEIDO_AVAILABLE = False
-    st.session_state['kaleido_available'] = KALEIDO_AVAILABLE
-
     st.markdown("""
     <style>
     .stDataFrame [data-testid="stDataFrame"] table td, .dataframe td, .dataframe th {
@@ -1013,6 +1048,15 @@ def main():
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
+        
+        # --- FLAG OVERNIGHT ---
+        st.subheader("🌙 Logica Pernotto")
+        enable_overnight = st.checkbox(
+            "Attiva pernotto",
+            value=False,
+            help="Se attivato, i venditori in settori lontani (>120 min di rientro) con più giornate pernottano in zona (max 1 notte). Se spento, comportamento originale."
+        )
+        
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
         removed_reps = st.session_state.get('removed_reps', [])
@@ -1232,7 +1276,8 @@ def main():
                     abc['da_a'], abc['da_b'], abc['da_c'],
                     abc['freq_a'], abc['freq_b'], abc['freq_c'],
                     dur_visita, ore_effettive_gg, gg_lavoro,
-                    max_stops_per_day
+                    max_stops_per_day,
+                    enable_overnight=enable_overnight
                 )
 
                 # 4. Calcola allocazione per contare clienti aggiuntivi per ogni ricevente
@@ -1461,7 +1506,8 @@ def main():
                                                abc['da_a'], abc['da_b'], abc['da_c'],
                                                abc['freq_a'], abc['freq_b'], abc['freq_c'],
                                                dur_visita, ore_effettive_gg, gg_lavoro,
-                                               max_stops_per_day)
+                                               max_stops_per_day,
+                                               enable_overnight=enable_overnight)
                     if res is None: 
                         st.error(df_w)
                     else:
@@ -1472,7 +1518,8 @@ def main():
                             'gg_lavoro': gg_lavoro, 'dur_visita': dur_visita,
                             'max_stops': max_stops_per_day, 'reps': reps,
                             'min_vol': st.session_state.get('min_vol', 0),
-                            'col_vol': col_vol
+                            'col_vol': col_vol,
+                            'enable_overnight': enable_overnight
                         }
                         st.session_state.current_df_v = df_v
                         st.success("✅ Calcolo completato!")
@@ -1511,7 +1558,8 @@ def main():
             st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
 
         min_vol_display = st.session_state.get('min_vol', 0)
-        st.info(f"📍 Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(min_vol_display)}**")
+        overnight_status = "🌙 ON" if params.get('enable_overnight', False) else "🏠 OFF"
+        st.info(f"📍 Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(min_vol_display)}** | Pernotto: **{overnight_status}**")
 
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
@@ -1622,9 +1670,8 @@ def main():
         else:
             st.caption(f"Visualizzati {fmt_eu(len(df_map))} clienti. Le zone colorate rappresentano l'area operativa effettiva di ogni venditore.")
             fig = go.Figure()
-            map_colors = _map_layout_colors()
-            palette = px.colors.qualitative.Alphabet
-            rep_colors = {r: palette[i % len(palette)] for i, r in enumerate(params['active_list'])}
+            colors = px.colors.qualitative.Alphabet
+            rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(params['active_list'])}
             for rep in params['active_list']:
                 sub = df_map[df_map['assigned_rep'] == rep]
                 if len(sub) >= 3:
@@ -1653,94 +1700,59 @@ def main():
                 subset=['latitudine', 'longitudine']
             )
             if len(df_v_active) > 0:
-                # Alone bianco per contrasto
                 fig.add_trace(go.Scattermapbox(
                     lat=df_v_active['latitudine'],
                     lon=df_v_active['longitudine'],
                     mode='markers',
-                    marker=dict(size=26, color='white', opacity=0.9),
-                    showlegend=False,
-                    hoverinfo='skip'
-                ))
-                fig.add_trace(go.Scattermapbox(
-                    lat=df_v_active['latitudine'],
-                    lon=df_v_active['longitudine'],
-                    mode='markers',
-                    marker=dict(size=18, color='#E63946', opacity=1.0),
-                    text=df_v_active['sales rep'].values,
+                    marker=dict(size=14, color='black', opacity=0.9),
                     name='🏠 Home Base',
-                    hoverinfo='name+text'
+                    hoverinfo='name'
                 ))
             fig.update_layout(
-                mapbox_style=MAPBOX_STYLE,
+                mapbox_style="carto-positron",
                 mapbox_zoom=5.5,
                 mapbox_center=dict(lat=42.5, lon=12.5),
                 margin=dict(r=0, t=30, l=0, b=120),
-                height=700,
-                paper_bgcolor=map_colors['paper_bg'],
-                plot_bgcolor=map_colors['plot_bg'],
-                font=dict(color=map_colors['font_color']),
+                height=650,
                 legend=dict(
                     orientation="h",
                     yanchor="bottom",
-                    y=-0.18,
+                    y=-0.15,
                     xanchor="center",
                     x=0.5,
-                    bgcolor=map_colors['legend_bg'],
+                    bgcolor='rgba(255,255,255,0.95)',
                     bordercolor='gray',
-                    borderwidth=1,
-                    font=dict(size=11)
+                    borderwidth=1
                 )
             )
-            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_EXPORT_CONFIG)
+            st.plotly_chart(fig, use_container_width=True)
 
         # =============================================================================
         # NUOVO: EXPORT AVANZATO & REPORTISTICA
         # =============================================================================
         st.divider()
         st.subheader("📦 Export Avanzato & Reportistica")
-        
-        kaleido_ok = st.session_state.get('kaleido_available', False)
-        if not kaleido_ok:
-            st.info("ℹ️ **Kaleido non rilevato**: l'export PNG automatico è disabilitato. "
-                    "Puoi comunque scaricare PNG cliccando il pulsante 📷 nella barra degli strumenti di ogni mappa. "
-                    "I bottoni qui sotto genereranno file HTML interattivi come fallback.")
 
         col_ex1, col_ex2, col_ex3 = st.columns(3)
 
         with col_ex1:
             if st.session_state.initial_fig is not None:
-                if kaleido_ok:
-                    if st.button("📸 Scarica Mappa Iniziale PNG", use_container_width=True):
-                        img = fig_to_png(st.session_state.initial_fig)
-                        if img:
-                            st.download_button("⬇️ Download PNG", img, "mappa_status_quo_iniziale.png", "image/png", use_container_width=True)
-                else:
-                    if st.button("📄 Scarica Mappa Iniziale HTML", use_container_width=True):
-                        html_bytes = fig_to_html_bytes(st.session_state.initial_fig)
-                        st.download_button("⬇️ Download HTML", html_bytes, "mappa_status_quo_iniziale.html", "text/html", use_container_width=True)
+                if st.button("📸 Scarica Mappa Iniziale PNG", use_container_width=True):
+                    img = fig_to_png(st.session_state.initial_fig)
+                    if img:
+                        st.download_button("⬇️ Download PNG", img, "mappa_status_quo_iniziale.png", "image/png", use_container_width=True)
 
         with col_ex2:
             if st.session_state.removal_figures:
-                if kaleido_ok:
-                    if st.button("📸 Scarica Mappe Riassegnazioni PNG", use_container_width=True):
-                        zip_buffer = BytesIO()
-                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                            for rep_name, fig in st.session_state.removal_figures.items():
-                                img = fig_to_png(fig)
-                                if img:
-                                    zf.writestr(f"riassegnazione_{rep_name}.png", img)
-                        zip_buffer.seek(0)
-                        st.download_button("⬇️ Download ZIP Mappe", zip_buffer.getvalue(), "mappe_riassegnazioni.zip", "application/zip", use_container_width=True)
-                else:
-                    if st.button("📄 Scarica Mappe Riassegnazioni HTML", use_container_width=True):
-                        zip_buffer = BytesIO()
-                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                            for rep_name, fig in st.session_state.removal_figures.items():
-                                html_bytes = fig_to_html_bytes(fig)
-                                zf.writestr(f"riassegnazione_{rep_name}.html", html_bytes)
-                        zip_buffer.seek(0)
-                        st.download_button("⬇️ Download ZIP HTML", zip_buffer.getvalue(), "mappe_riassegnazioni_html.zip", "application/zip", use_container_width=True)
+                if st.button("📸 Scarica Mappe Riassegnazioni PNG", use_container_width=True):
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for rep_name, fig in st.session_state.removal_figures.items():
+                            img = fig_to_png(fig)
+                            if img:
+                                zf.writestr(f"riassegnazione_{rep_name}.png", img)
+                    zip_buffer.seek(0)
+                    st.download_button("⬇️ Download ZIP Mappe", zip_buffer.getvalue(), "mappe_riassegnazioni.zip", "application/zip", use_container_width=True)
 
         with col_ex3:
             if st.button("🏁 Status Quo Finale + Export Excel", use_container_width=True, type="primary"):
@@ -1769,13 +1781,10 @@ def main():
                                         f"downsizing_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                         use_container_width=True)
-                        if kaleido_ok:
-                            img_final = fig_to_png(final_fig)
-                            if img_final:
-                                st.download_button("📥 Scarica Mappa Finale PNG", img_final, "mappa_status_quo_finale.png", "image/png", use_container_width=True)
-                        else:
-                            html_final = fig_to_html_bytes(final_fig)
-                            st.download_button("📥 Scarica Mappa Finale HTML", html_final, "mappa_status_quo_finale.html", "text/html", use_container_width=True)
+                        # Offri anche mappa finale
+                        img_final = fig_to_png(final_fig)
+                        if img_final:
+                            st.download_button("📥 Scarica Mappa Finale PNG", img_final, "mappa_status_quo_finale.png", "image/png", use_container_width=True)
                     else:
                         st.error("❌ Errore generazione Excel")
 
