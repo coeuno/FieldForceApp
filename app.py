@@ -7,6 +7,8 @@ from scipy.spatial import ConvexHull
 import warnings
 import zipfile
 from io import BytesIO
+from io import StringIO
+import colorsys
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
@@ -117,48 +119,33 @@ def compute_hull_coords(df_customers):
         return None, None
 
 # =============================================================================
-# MODELLO BACINI POLARI + NN PER GIORNATA (CON OVERNIGHT CONDIZIONALE)
+# MODELLO BACINI POLARI + NN PER GIORNATA
 # =============================================================================
-def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_dict,
-                      mode='giornaliero', hotel_commute_km=12.0):
-    """
-    Tour Nearest Neighbor per una singola giornata di lavoro.
-    
-    mode:
-        'giornaliero' -> partenza da casa, rientro a casa (classico, come prima)
-        'andata'      -> partenza da casa, fine giornata in hotel (NO rientro)
-        'ritorno'     -> partenza da hotel (centroide clienti), rientro a casa
+
+# =============================================================================
+# NUOVE FUNZIONI: PERNOTTO, ALPHA SHAPES, PALETTE, CACHE
+# =============================================================================
+
+def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_dict, return_home=True):
+    """Tour Nearest Neighbor per una singola giornata di lavoro.
+    Se return_home=False, restituisce le coordinate finali (open VRP).
     """
     n = len(giornata_df)
     if n == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, start_lat, start_lon, 0.0, 0.0, start_lat, start_lon
 
     lats = giornata_df['lat'].values
     lons = giornata_df['lon'].values
     siglas = giornata_df['sigla'].values
 
-    # --- PUNTO DI PARTENZA ---
-    if mode == 'ritorno':
-        # L'hotel è approssimato al centroide dei clienti di questa giornata
-        origin_lat = float(np.mean(lats))
-        origin_lon = float(np.mean(lons))
-        # Costo fisso mattutino: sveglia, colazione, spostamento hotel -> primo cliente
-        first_sigla = siglas[0] if n > 0 else None
-        circ_hotel = circuity_dict.get(first_sigla, 1.30) if first_sigla else 1.30
-        speed_hotel = speed_dict.get(first_sigla, 45) if first_sigla else 45
-        hotel_km = hotel_commute_km * circ_hotel
-        hotel_time = hotel_km / speed_hotel
-    else:
-        origin_lat, origin_lon = start_lat, start_lon
-        hotel_km, hotel_time = 0.0, 0.0
-
     remaining = set(range(n))
-    tour_km = hotel_km
-    tour_hours = hotel_time
-    cur_lat, cur_lon = origin_lat, origin_lon
+    tour_km = 0.0
+    cur_lat, cur_lon = start_lat, start_lon
+    first_idx = None
+    last_idx = None
+    km_andata = 0.0
 
-    # --- NEAREST NEIGHBOR (identico al codice originale) ---
-    for _ in range(n):
+    for i in range(n):
         if not remaining:
             break
         best_idx = None
@@ -171,63 +158,187 @@ def _nn_tour_giornata(giornata_df, start_lat, start_lon, circuity_dict, speed_di
 
         sigla = siglas[best_idx]
         circ = circuity_dict.get(sigla, 1.35)
-        speed = speed_dict.get(sigla, 45)
-        
-        km_reali = best_dist * circ
-        tempo_tratta = km_reali / speed
-        
-        tour_km += km_reali
-        tour_hours += tempo_tratta
+        leg_km = best_dist * circ
+        tour_km += leg_km
+
+        if i == 0:
+            km_andata = leg_km
+            first_idx = best_idx
+        last_idx = best_idx
 
         remaining.remove(best_idx)
         cur_lat = lats[best_idx]
         cur_lon = lons[best_idx]
 
-    # --- CHIUSURA TOUR IN BASE ALLA MODALITÀ ---
-    if mode == 'giornaliero':
-        # Rientro classico a casa (COMPORTAMENTO ORIGINALE INALTERATO)
+    # Ritorno a casa (se richiesto)
+    km_ritorno = 0.0
+    end_lat, end_lon = cur_lat, cur_lon
+    if return_home:
         return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
         avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
-        avg_speed = np.mean([speed_dict.get(s, 45) for s in siglas]) if n > 0 else 45
-        km_reali_ritorno = return_km * avg_circ
-        tempo_ritorno = km_reali_ritorno / avg_speed
-        tour_km += km_reali_ritorno
-        tour_hours += tempo_ritorno
-        
-    elif mode == 'andata':
-        # NO rientro: il venditore pernotta in zona dopo l'ultima visita
-        pass
-        
-    elif mode == 'ritorno':
-        # Rientro a casa dalla fine del tour (dopo la notte in hotel)
-        return_km = haversine_km(cur_lon, cur_lat, start_lon, start_lat)
-        avg_circ = np.mean([circuity_dict.get(s, 1.30) for s in siglas]) if n > 0 else 1.30
-        avg_speed = np.mean([speed_dict.get(s, 45) for s in siglas]) if n > 0 else 45
-        km_reali_ritorno = return_km * avg_circ
-        tempo_ritorno = km_reali_ritorno / avg_speed
-        tour_km += km_reali_ritorno
-        tour_hours += tempo_ritorno
+        km_ritorno = return_km * avg_circ
+        tour_km += km_ritorno
+        end_lat, end_lon = start_lat, start_lon
 
-    return tour_km, tour_hours
+    # Velocità media della giornata
+    speeds = [speed_dict.get(s, 45) for s in siglas]
+    avg_speed = np.mean(speeds) if speeds else 45
+
+    return tour_km, tour_km / avg_speed, end_lat, end_lon, km_andata, km_ritorno, lats[last_idx], lons[last_idx]
+
+
+def optimize_pernotto(giornate, home_lat, home_lon, soglia_min, max_notti_week,
+                      max_notti_consecutive, hotel_offset_km, gg_lavoro,
+                      circuity_dict, speed_dict):
+    """Ottimizza missioni con pernotto tra giornate consecutive."""
+    n = len(giornate)
+    if n < 2:
+        return 0.0, 0.0, []
+
+    # Soglia in km (velocità media conservativa del bacino)
+    all_speeds = []
+    for g in giornate:
+        all_speeds.extend([speed_dict.get(s, 45) for s in g.get('sigle', [])])
+    avg_speed = np.mean(all_speeds) if all_speeds else 45
+    soglia_km = (soglia_min / 60.0) * avg_speed
+
+    # Budget notti all'anno
+    max_notti_anno = max(1, int((gg_lavoro / 7.0) * max_notti_week))
+
+    # Calcola hotel (centroide clienti) per ogni giornata
+    for g in giornate:
+        clienti = g.get('clienti', [])
+        if len(clienti) > 0:
+            g['hotel_lat'] = np.mean([c['lat'] for c in clienti])
+            g['hotel_lon'] = np.mean([c['lon'] for c in clienti])
+        else:
+            g['hotel_lat'] = home_lat
+            g['hotel_lon'] = home_lon
+
+    # Valuta coppie (1 notte)
+    coppie = []
+    for i in range(n - 1):
+        g_i = giornate[i]
+        g_j = giornate[i + 1]
+
+        costo_attuale = g_i['km_ritorno'] + g_j['km_andata']
+        circ_h = circuity_dict.get(g_j['sigle'][0] if g_j['sigle'] else 'RM', 1.35)
+        dist_to_hotel = haversine_km(g_i['last_lon'], g_i['last_lat'],
+                                       g_j['hotel_lon'], g_j['hotel_lat']) * circ_h
+        costo_nuovo = dist_to_hotel + hotel_offset_km
+        risparmio = costo_attuale - costo_nuovo
+
+        if risparmio > soglia_km:
+            coppie.append((i, risparmio, dist_to_hotel, costo_attuale, costo_nuovo))
+
+    # Ordina per risparmio decrescente
+    coppie.sort(key=lambda x: x[1], reverse=True)
+
+    used = [False] * n
+    notti_usate = 0
+    missioni = []  # (start_idx, end_idx, risparmio_tot, n_notti)
+
+    for i, risp, dist_h, costo_att, costo_nuovo in coppie:
+        if notti_usate >= max_notti_anno:
+            break
+        if used[i] or used[i + 1]:
+            continue
+
+        # Default: missione 1 notte (2 giorni)
+        best_mission = (i, i + 1, risp, 1)
+        used_mission = False
+
+        # Verifica 2 notti consecutive (3 giorni) - solo se irrinunciabile
+        if max_notti_consecutive >= 2 and (i + 2) < n and not used[i + 2]:
+            g_i, g_i1, g_i2 = giornate[i], giornate[i + 1], giornate[i + 2]
+
+            # Notte 1: i -> i+1
+            circ1 = circuity_dict.get(g_i1['sigle'][0] if g_i1['sigle'] else 'RM', 1.35)
+            dist1 = haversine_km(g_i['last_lon'], g_i['last_lat'],
+                                 g_i1['hotel_lon'], g_i1['hotel_lat']) * circ1
+            risp1 = (g_i['km_ritorno'] + g_i1['km_andata']) - (dist1 + hotel_offset_km)
+
+            # Notte 2: i+1 -> i+2
+            circ2 = circuity_dict.get(g_i2['sigle'][0] if g_i2['sigle'] else 'RM', 1.35)
+            dist2 = haversine_km(g_i1['last_lon'], g_i1['last_lat'],
+                                 g_i2['hotel_lon'], g_i2['hotel_lat']) * circ2
+            risp2 = (g_i1['km_ritorno'] + g_i2['km_andata']) - (dist2 + hotel_offset_km)
+
+            risp_tot = risp1 + risp2
+
+            # Irrinunciabile: risparmio > 1.8 * soglia per notte in media
+            if risp_tot > 1.8 * soglia_km * 2 and notti_usate + 2 <= max_notti_anno:
+                best_mission = (i, i + 2, risp_tot, 2)
+                used[i] = used[i + 1] = used[i + 2] = True
+                notti_usate += 2
+                used_mission = True
+
+        if not used_mission:
+            used[i] = used[i + 1] = True
+            notti_usate += 1
+
+        missioni.append(best_mission)
+
+    # Applica delta km/ore
+    total_delta_km = 0.0
+    total_delta_ore = 0.0
+    dettaglio = []
+
+    for start, end, risp_tot, n_notti in missioni:
+        for idx in range(start, end):
+            g_curr = giornate[idx]
+            g_next = giornate[idx + 1]
+
+            # Rimuovi ritorno di g_curr
+            delta_km = -g_curr['km_ritorno']
+            # Aggiungi spostamento verso hotel di g_next
+            circ = circuity_dict.get(g_next['sigle'][0] if g_next['sigle'] else 'RM', 1.35)
+            dist_to_hotel = haversine_km(g_curr['last_lon'], g_curr['last_lat'],
+                                         g_next['hotel_lon'], g_next['hotel_lat']) * circ
+            delta_km += dist_to_hotel
+
+            # Rimuovi andata di g_next
+            delta_km -= g_next['km_andata']
+            # Aggiungi offset hotel -> primo cliente
+            delta_km += hotel_offset_km
+
+            speed_curr = np.mean([speed_dict.get(s, 45) for s in g_curr['sigle']]) if g_curr['sigle'] else 45
+            speed_next = np.mean([speed_dict.get(s, 45) for s in g_next['sigle']]) if g_next['sigle'] else 45
+
+            delta_ore = (-g_curr['km_ritorno'] / speed_curr) + (dist_to_hotel / speed_curr) +                         (-g_next['km_andata'] / speed_next) + (hotel_offset_km / speed_next)
+
+            total_delta_km += delta_km
+            total_delta_ore += delta_ore
+
+            dettaglio.append({
+                'giorno_da': idx,
+                'giorno_a': idx + 1,
+                'delta_km': round(delta_km, 2),
+                'delta_ore': round(delta_ore, 2),
+                'hotel_lat': g_next['hotel_lat'],
+                'hotel_lon': g_next['hotel_lon'],
+                'notti_in_missione': n_notti if idx == start else 0
+            })
+
+    return total_delta_km, total_delta_ore, dettaglio
 
 
 def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stops_per_day,
-                              circuity_dict, speed_dict, enable_overnight=False,
-                              max_commute_hours=2.0, hotel_commute_km=12.0):
+                              circuity_dict, speed_dict,
+                              pernotto_attivo=False, soglia_min_pernotto=120,
+                              max_notti_week=1, max_notti_consecutive=2,
+                              hotel_offset_km=10, gg_lavoro=220):
     """
     Modello bacini polari con tour NN per giornata.
-    NOVITÀ: logica Overnight condizionale per settori lontani (> max_commute_hours).
-    I bacini polari restano identici. Dopo l'assemblaggio, se un settore ha più giornate
-    ed è lontano, le prime coppie diventano blocchi da 2 giorni (1 notte).
-    Se enable_overnight è False, comportamento originale al 100%.
+    Supporta pernotto ottimizzato (missioni su territorio).
     """
     if len(df_customers) == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, []
 
     df = df_customers.copy()
     total_visits = df['freq_visite'].sum()
     if total_visits == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, []
 
     n_customers = len(df)
     n_sectors = min(12, max(4, int(np.ceil(np.sqrt(n_customers)))))
@@ -254,16 +365,13 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
             })
 
     if len(visits) == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, []
 
     visits_df = pd.DataFrame(visits)
     n_visits = len(visits_df)
     visit_mask = np.zeros(n_visits, dtype=bool)
 
-    # =============================================================================
-    # FASE 1: ASSEMBLAGGIO GIORNATE (bacini polari, IDENTICO al codice originale)
-    # =============================================================================
-    giornate_raw = []  # lista di dict: {'sector': int, 'df': DataFrame}
+    giornate = []
 
     while not visit_mask.all():
         residue = {}
@@ -295,94 +403,195 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
                     remaining_slots -= len(adj_indices)
 
         if len(taken_indices) > 0:
-            giornata_df = visits_df.loc[taken_indices].copy()
-            giornate_raw.append({
+            giornata_df = visits_df.loc[taken_indices]
+            km_giorno, ore_giorno, end_lat, end_lon, km_andata, km_ritorno, last_lat, last_lon = _nn_tour_giornata(
+                giornata_df, rep_home_lat, rep_home_lon,
+                circuity_dict, speed_dict, return_home=True
+            )
+
+            # Estrai first client
+            first_lat = giornata_df.iloc[0]['lat']
+            first_lon = giornata_df.iloc[0]['lon']
+            sigle_list = giornata_df['sigla'].tolist()
+
+            giornate.append({
                 'sector': best_sector,
-                'df': giornata_df
+                'n_visite': len(taken_indices),
+                'km': km_giorno,
+                'ore_viaggio': ore_giorno,
+                'km_andata': km_andata,
+                'km_ritorno': km_ritorno,
+                'km_tour': km_giorno - km_andata - km_ritorno,
+                'first_lat': first_lat,
+                'first_lon': first_lon,
+                'last_lat': last_lat,
+                'last_lon': last_lon,
+                'sigle': sigle_list,
+                'clienti': [{'lat': r['lat'], 'lon': r['lon'], 'sigla': r['sigla']} for _, r in giornata_df.iterrows()]
             })
 
-    # =============================================================================
-    # FASE 2: RAGGRUPPAMENTO PER SETTORE E APPLICAZIONE OVERNIGHT
-    # =============================================================================
-    # Raggruppa gli indici delle giornate per settore principale
-    sector_giornate = {}
-    for i, g in enumerate(giornate_raw):
-        s = g['sector']
-        if s not in sector_giornate:
-            sector_giornate[s] = []
-        sector_giornate[s].append(i)
+    total_km = sum(g['km'] for g in giornate)
+    total_ore = sum(g['ore_viaggio'] for g in giornate)
 
-    # Determina la modalità per ogni giornata di ogni settore
-    sector_modes = {}  # sector -> list of modes (in ordine cronologico delle giornate)
+    # --- APPLICA PERNOTTO ---
+    if pernotto_attivo and len(giornate) >= 2:
+        delta_km, delta_ore, dettaglio_pernotto = optimize_pernotto(
+            giornate, rep_home_lat, rep_home_lon,
+            soglia_min_pernotto, max_notti_week, max_notti_consecutive,
+            hotel_offset_km, gg_lavoro, circuity_dict, speed_dict
+        )
+        total_km += delta_km
+        total_ore += delta_ore
 
-    for s, idx_list in sector_giornate.items():
-        n_giorn = len(idx_list)
-        if n_giorn <= 1 or not enable_overnight:
-            # Una sola giornata, o overnight disattivato: sempre giornaliero
-            sector_modes[s] = ['giornaliero'] * n_giorn
-            continue
-
-        # Centroide di TUTTI i clienti assegnati a questo settore (tutte le sue giornate)
-        all_clients = pd.concat([giornate_raw[i]['df'] for i in idx_list])
-        if len(all_clients) == 0:
-            sector_modes[s] = ['giornaliero'] * n_giorn
-            continue
-
-        centroid_lat = all_clients['lat'].mean()
-        centroid_lon = all_clients['lon'].mean()
-        dist_casa = haversine_km(rep_home_lon, rep_home_lat, centroid_lon, centroid_lat)
-
-        # Circuity e velocità medie del settore (media aritmetica delle sigle)
-        sigle = all_clients['sigla'].values
-        avg_circ = np.mean([circuity_dict.get(sig, 1.30) for sig in sigle]) if len(sigle) > 0 else 1.30
-        avg_speed = np.mean([speed_dict.get(sig, 45) for sig in sigle]) if len(sigle) > 0 else 45
-        tempo_ritorno_ore = (dist_casa * avg_circ) / avg_speed
-
-        if tempo_ritorno_ore > max_commute_hours:
-            # Settore lontano con >1 giornata: attiva blocchi da max 2 giorni (1 notte)
-            modes = []
-            i = 0
-            while i < n_giorn:
-                if i + 1 < n_giorn:
-                    # Blocco di 2 giorni: andata (no rientro) + ritorno (dopo pernottamento)
-                    modes.append('andata')
-                    modes.append('ritorno')
-                    i += 2
-                else:
-                    # Giornata singola residua: rientro normale (non vale la pena pernottare)
-                    modes.append('giornaliero')
-                    i += 1
-            sector_modes[s] = modes
-        else:
-            # Settore vicino: comportamento classico, nessuna modifica
-            sector_modes[s] = ['giornaliero'] * n_giorn
-
-    # =============================================================================
-    # FASE 3: CALCOLO KM E ORE CON LE MODALITÀ CORRETTE
-    # =============================================================================
-    total_km = 0.0
-    total_ore = 0.0
-
-    for s, idx_list in sector_giornate.items():
-        modes = sector_modes[s]
-        for j, idx in enumerate(idx_list):
-            g = giornate_raw[idx]
-            mode = modes[j] if j < len(modes) else 'giornaliero'
-            km_giorno, ore_giorno = _nn_tour_giornata(
-                g['df'], rep_home_lat, rep_home_lon,
-                circuity_dict, speed_dict, mode=mode,
-                hotel_commute_km=hotel_commute_km
-            )
-            total_km += km_giorno
-            total_ore += ore_giorno
-
-    return total_km, total_ore
+    return total_km, total_ore, giornate
 
 
+def compute_alpha_shape(df_customers, alpha_factor=0.15):
+    """Concave hull via negative buffer su ConvexHull (richiede shapely)."""
+    try:
+        from shapely.geometry import MultiPoint
+        pts = df_customers[['longitudine', 'latitudine']].values
+        if len(pts) < 3:
+            return None, None
+        multipoint = MultiPoint(pts)
+        hull = multipoint.convex_hull
+        bounds = hull.bounds
+        size = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+        buffer_size = -size * alpha_factor
+        if buffer_size >= 0:
+            return None, None
+        concave = hull.buffer(buffer_size)
+        if concave.is_empty:
+            return None, None
+        if concave.geom_type == 'Polygon':
+            x, y = concave.exterior.xy
+            return list(x), list(y)
+        elif concave.geom_type == 'MultiPolygon':
+            largest = max(concave.geoms, key=lambda p: p.area)
+            x, y = largest.exterior.xy
+            return list(x), list(y)
+    except Exception:
+        return None, None
+
+
+def build_territory_map(df_work, df_v, active_reps, title=""):
+    """Genera la mappa territori Plotly con Alpha Shapes e palette ottimizzata."""
+    df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
+    fig = go.Figure()
+    if len(df_map) == 0:
+        return fig
+
+    # Palette HSV altamente distinguibile (golden ratio)
+    def hsv_palette(n):
+        pal = []
+        for i in range(n):
+            h = (i * 0.618033988749895) % 1.0
+            s = 0.75 + 0.25 * ((i % 3) / 2.0)
+            v = 0.85 + 0.15 * ((i % 2))
+            r, g, b = colorsys.hsv_to_rgb(h, s, v)
+            pal.append(f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}')
+        return pal
+
+    colors = hsv_palette(len(active_reps))
+    rep_colors = {r: colors[i] for i, r in enumerate(active_reps)}
+
+    # Alpha shapes per territori
+    for rep in active_reps:
+        sub = df_map[df_map['assigned_rep'] == rep]
+        if len(sub) >= 3:
+            lon_h, lat_h = compute_alpha_shape(sub)
+            if lon_h is not None:
+                fig.add_trace(go.Scattermapbox(
+                    mode='lines', lon=lon_h, lat=lat_h,
+                    line=dict(width=2, color=rep_colors[rep]),
+                    fill='toself', fillcolor=rep_colors[rep],
+                    opacity=0.12,
+                    name=f"Zona {rep}",
+                    hoverinfo='name'
+                ))
+            else:
+                lon_h, lat_h = compute_hull_coords(sub)
+                if lon_h is not None:
+                    fig.add_trace(go.Scattermapbox(
+                        mode='lines', lon=lon_h, lat=lat_h,
+                        line=dict(width=1.5, color=rep_colors[rep]),
+                        fill='toself', fillcolor=rep_colors[rep],
+                        opacity=0.10,
+                        name=f"Zona {rep}",
+                        hoverinfo='name'
+                    ))
+
+    # Clienti per classe con dimensioni differenziate
+    classe_colors = {'A': '#e53935', 'B': '#fb8c00', 'C': '#1e88e5', 'D': '#9e9e9e'}
+    classe_sizes = {'A': 9, 'B': 6, 'C': 4, 'D': 2}
+    for classe in ['A', 'B', 'C', 'D']:
+        df_cl = df_map[df_map['classe'] == classe]
+        if len(df_cl) > 0:
+            fig.add_trace(go.Scattermapbox(
+                lat=df_cl['latitudine'], lon=df_cl['longitudine'],
+                mode='markers',
+                marker=dict(size=classe_sizes[classe], color=classe_colors[classe],
+                           opacity=0.85 if classe != 'D' else 0.35),
+                name=f"Classe {classe}",
+                text=df_cl['assigned_rep'].values,
+                hoverinfo='name+text'
+            ))
+
+    # Home base venditori
+    df_v_active = df_v[df_v['sales rep'].isin(active_reps)].dropna(subset=['latitudine', 'longitudine'])
+    if len(df_v_active) > 0:
+        fig.add_trace(go.Scattermapbox(
+            lat=df_v_active['latitudine'],
+            lon=df_v_active['longitudine'],
+            mode='markers+text',
+            marker=dict(size=16, color='black', opacity=0.9),
+            text=df_v_active['sales rep'].values,
+            textposition='top right',
+            textfont=dict(size=10, color='black'),
+            name='🏠 Home Base',
+            hoverinfo='name'
+        ))
+
+    fig.update_layout(
+        mapbox_style="carto-positron",
+        mapbox_zoom=5.5,
+        mapbox_center=dict(lat=42.5, lon=12.5),
+        margin=dict(r=0, t=30, l=0, b=120),
+        height=700,
+        title=title,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5,
+            bgcolor='rgba(255,255,255,0.95)',
+            bordercolor='gray',
+            borderwidth=1
+        )
+    )
+    return fig
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _run_simulation_cached(df_c_json, df_v_json, active_list, col_vol, da_a, da_b, da_c,
+                           freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
+                           max_stops_per_day, pernotto_attivo, soglia_min_pernotto,
+                           max_notti_week, max_notti_consecutive, hotel_offset_km):
+    """Wrapper cached per run_simulation."""
+    df_c = pd.read_json(StringIO(df_c_json))
+    df_v = pd.read_json(StringIO(df_v_json))
+    return run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
+                          freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
+                          max_stops_per_day,
+                          pernotto_attivo, soglia_min_pernotto,
+                          max_notti_week, max_notti_consecutive, hotel_offset_km)
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
-                   max_stops_per_day, enable_overnight=False, max_commute_hours=2.0,
-                   hotel_commute_km=12.0):
+                   max_stops_per_day,
+                   pernotto_attivo=False, soglia_min_pernotto=120,
+                   max_notti_week=1, max_notti_consecutive=2,
+                   hotel_offset_km=10):
     df_v_act = df_v[df_v['sales rep'].isin(active_list)].copy()
     valid_mask = df_v_act['latitudine'].notna() & df_v_act['longitudine'].notna()
     df_v_valid = df_v_act[valid_mask]
@@ -463,12 +672,12 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
         if len(sub) > 0:
             rep_lat = sub['rep_lat'].iloc[0]
             rep_lon = sub['rep_lon'].iloc[0]
-            km_totali, ore_viag = calculate_travel_km_tours(
+            km_totali, ore_viag, _ = calculate_travel_km_tours(
                 sub, rep_lat, rep_lon, max_stops_per_day,
                 PROVINCIAL_CIRCUITY, PROVINCIAL_SPEED,
-                enable_overnight=enable_overnight,
-                max_commute_hours=max_commute_hours,
-                hotel_commute_km=hotel_commute_km
+                pernotto_attivo, soglia_min_pernotto,
+                max_notti_week, max_notti_consecutive,
+                hotel_offset_km, gg_lavoro
             )
             travel_data.append({'sales_rep': rep, 'ore_viaggio_annue': ore_viag, 'km_annui': km_totali})
         else:
@@ -663,74 +872,6 @@ def render_html_table(headers, rows, font_size="12px"):
 # =============================================================================
 # NUOVE FUNZIONI: MAPPE & EXPORT
 # =============================================================================
-def build_territory_map(df_work, df_v, active_reps, title=""):
-    """Genera la mappa territori Plotly (ConvexHull + scatter clienti + home base)."""
-    df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
-    fig = go.Figure()
-    if len(df_map) == 0:
-        return fig
-
-    colors = px.colors.qualitative.Alphabet
-    rep_colors = {r: colors[i % len(colors)] for i, r in enumerate(active_reps)}
-
-    for rep in active_reps:
-        sub = df_map[df_map['assigned_rep'] == rep]
-        if len(sub) >= 3:
-            lon_h, lat_h = compute_hull_coords(sub)
-            if lon_h is not None:
-                fig.add_trace(go.Scattermapbox(
-                    mode='lines', lon=lon_h, lat=lat_h,
-                    line=dict(width=1.5, color=rep_colors[rep]),
-                    fill='toself', fillcolor=rep_colors[rep],
-                    opacity=0.25,
-                    name=f"Zona {rep}",
-                    hoverinfo='name'
-                ))
-
-    classe_colors = {'A': '#ff0000', 'B': '#ffa500', 'C': '#0088ff'}
-    for classe, color, size in [('A', classe_colors['A'], 6), ('B', classe_colors['B'], 5), ('C', classe_colors['C'], 4)]:
-        df_cl = df_map[df_map['classe'] == classe]
-        if len(df_cl) > 0:
-            fig.add_trace(go.Scattermapbox(
-                lat=df_cl['latitudine'], lon=df_cl['longitudine'],
-                mode='markers', marker=dict(size=size, color=color, opacity=0.8),
-                name=f"Classe {classe}",
-                text=df_cl['assigned_rep'].values,
-                hoverinfo='name+text'
-            ))
-
-    df_v_active = df_v[df_v['sales rep'].isin(active_reps)].dropna(subset=['latitudine', 'longitudine'])
-    if len(df_v_active) > 0:
-        fig.add_trace(go.Scattermapbox(
-            lat=df_v_active['latitudine'],
-            lon=df_v_active['longitudine'],
-            mode='markers',
-            marker=dict(size=14, color='black', opacity=0.9),
-            name='🏠 Home Base',
-            hoverinfo='name'
-        ))
-
-    fig.update_layout(
-        mapbox_style="carto-positron",
-        mapbox_zoom=5.5,
-        mapbox_center=dict(lat=42.5, lon=12.5),
-        margin=dict(r=0, t=30, l=0, b=120),
-        height=650,
-        title=title,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.15,
-            xanchor="center",
-            x=0.5,
-            bgcolor='rgba(255,255,255,0.95)',
-            bordercolor='gray',
-            borderwidth=1
-        )
-    )
-    return fig
-
-
 def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title=""):
     """Mappa di riassegnazione con frecce cliente → ricevente e home base venditore rimosso."""
     fig = go.Figure()
@@ -1048,15 +1189,27 @@ def main():
         ore_effettive_gg = ore_gg - (pausa_pranzo / 60.0)
         st.caption(f"*Capacità annua: {ore_effettive_gg * gg_lavoro:,.0f} ore*")
         max_stops_per_day = st.slider("📦 Max visite/giorno", 3, 10, 5, step=1)
-        
-        # --- FLAG OVERNIGHT ---
-        st.subheader("🌙 Logica Pernotto")
-        enable_overnight = st.checkbox(
-            "Attiva pernotto",
-            value=False,
-            help="Se attivato, i venditori in settori lontani (>120 min di rientro) con più giornate pernottano in zona (max 1 notte). Se spento, comportamento originale."
-        )
-        
+
+        st.divider()
+        st.subheader("🏨 Logica di Pernotto")
+        pernotto_attivo = st.toggle("Attiva Pernotto", value=False, key="pernotto_toggle")
+        if pernotto_attivo:
+            st.markdown("<div style='background:#1e1e1e;padding:12px;border-radius:8px;border-left:4px solid #4caf50;'>"
+                        "<b>🟢 Pernotto attivo</b><br>"
+                        "Il venditore non torna a casa se il risparmio supera la soglia. "
+                        "Il giorno successivo parte dal centroide dei clienti del giorno dopo."
+                        "</div>", unsafe_allow_html=True)
+            soglia_min_pernotto = st.slider("Soglia min. guida (min) per attivare pernotto", 60, 240, 120, step=10)
+            max_notti_week = st.slider("Max notti/settimana", 0, 3, 1, step=1)
+            max_notti_consecutive = st.slider("Max notti consecutive", 1, 3, 2, step=1,
+                                              help="2 notti = missione 3 giorni. Attivata solo se risparmio > 1.8×soglia/notte")
+            hotel_offset_km = st.number_input("Distanza hotel → primo cliente (km)", 0.0, 50.0, 10.0, step=5.0,
+                                              help="Stima del viaggio mattutino hotel-primo cliente")
+        else:
+            soglia_min_pernotto = 120
+            max_notti_week = 1
+            max_notti_consecutive = 2
+            hotel_offset_km = 10.0
         st.subheader("👥 Stato Venditori")
         reps = sorted(df_v['sales rep'].unique())
         removed_reps = st.session_state.get('removed_reps', [])
@@ -1277,7 +1430,9 @@ def main():
                     abc['freq_a'], abc['freq_b'], abc['freq_c'],
                     dur_visita, ore_effettive_gg, gg_lavoro,
                     max_stops_per_day,
-                    enable_overnight=enable_overnight
+                    pernotto_attivo, soglia_min_pernotto,
+                    max_notti_week, max_notti_consecutive,
+                    hotel_offset_km
                 )
 
                 # 4. Calcola allocazione per contare clienti aggiuntivi per ogni ricevente
@@ -1507,7 +1662,9 @@ def main():
                                                abc['freq_a'], abc['freq_b'], abc['freq_c'],
                                                dur_visita, ore_effettive_gg, gg_lavoro,
                                                max_stops_per_day,
-                                               enable_overnight=enable_overnight)
+                                               pernotto_attivo, soglia_min_pernotto,
+                                               max_notti_week, max_notti_consecutive,
+                                               hotel_offset_km)
                     if res is None: 
                         st.error(df_w)
                     else:
@@ -1518,8 +1675,7 @@ def main():
                             'gg_lavoro': gg_lavoro, 'dur_visita': dur_visita,
                             'max_stops': max_stops_per_day, 'reps': reps,
                             'min_vol': st.session_state.get('min_vol', 0),
-                            'col_vol': col_vol,
-                            'enable_overnight': enable_overnight
+                            'col_vol': col_vol
                         }
                         st.session_state.current_df_v = df_v
                         st.success("✅ Calcolo completato!")
@@ -1558,8 +1714,7 @@ def main():
             st.markdown(f"<div style='text-align: center;'><div style='font-size: 14px; color: #888;'>Venditori Overload</div><div style='font-size: 36px; font-weight: bold;'>{fmt_eu(overload)}</div></div>", unsafe_allow_html=True)
 
         min_vol_display = st.session_state.get('min_vol', 0)
-        overnight_status = "🌙 ON" if params.get('enable_overnight', False) else "🏠 OFF"
-        st.info(f"📍 Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(min_vol_display)}** | Pernotto: **{overnight_status}**")
+        st.info(f"📍 Stop/Giorno: **{params['max_stops']}** | Soglia minima: **≥{fmt_eu(min_vol_display)}**")
 
         st.divider()
         st.subheader("📋 Dettaglio Scenario Corrente")
