@@ -465,6 +465,7 @@ def calculate_travel_km_tours(df_customers, rep_home_lat, rep_home_lon, max_stop
     total_ore = sum(g['ore_viaggio'] for g in giornate)
 
     n_pernotti = 0
+    dettaglio_pernotto = []
     # --- APPLICA PERNOTTO ---
     if pernotto_attivo and len(giornate) >= 2:
         delta_km, delta_ore, dettaglio_pernotto = optimize_pernotto(
@@ -1216,7 +1217,21 @@ def main():
         st.divider()
         st.subheader("⚙️ Parametri Simulazione")
         vol_cols = [c for c in df_c.columns if any(k in c.lower() for k in ['gy', 'du', 'tot', '25', '26', 'vol', 'pezzi'])]
-        col_vol = st.selectbox("Colonna Volume", vol_cols if vol_cols else df_c.columns.tolist())
+        available_cols = vol_cols if vol_cols else df_c.columns.tolist()
+        selected_vol_cols = st.multiselect(
+            "📊 Colonne Volume (somma 1-5)", 
+            available_cols, 
+            default=available_cols[:1] if available_cols else [],
+            max_selections=5,
+            key="vol_cols_select"
+        )
+        if len(selected_vol_cols) == 0:
+            st.error("❌ Seleziona almeno una colonna volume")
+            st.stop()
+        if len(selected_vol_cols) > 1:
+            col_vol = 'volume_calcolato'
+        else:
+            col_vol = selected_vol_cols[0]
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input("📅 Giorni lavorativi/anno", 180, 260, 220, step=5)
@@ -1262,6 +1277,10 @@ def main():
     # DOPO SIDEBAR: usa il working set come fonte di verità
     # =============================================================================
     df_c = st.session_state.df_c_working
+
+    # --- RIGENERA COLONNA VOLUME CALCOLATA ---
+    if 'selected_vol_cols' in locals() and len(selected_vol_cols) > 1:
+        df_c['volume_calcolato'] = df_c[selected_vol_cols].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1)
 
     # =============================================================================
     # RILEVAMENTO RIMOZIONE VENDITORE
@@ -1459,8 +1478,10 @@ def main():
                 temp_active = [r for r in reps if r not in st.session_state.removed_reps and rep_status.get(r, True)]
 
                 # 3. Simulazione completa UNA SOLA VOLTA
-                temp_res, _ = run_simulation(
-                    df_temp, df_v, temp_active, col_vol,
+                df_temp_json = df_temp.to_json()
+                df_v_json = df_v.to_json()
+                temp_res, _ = _run_simulation_cached(
+                    df_temp_json, df_v_json, temp_active, col_vol,
                     abc['da_a'], abc['da_b'], abc['da_c'],
                     abc['freq_a'], abc['freq_b'], abc['freq_c'],
                     dur_visita, ore_effettive_gg, gg_lavoro,
@@ -1619,10 +1640,10 @@ def main():
 
         if st.session_state.abc_vals is None:
             st.session_state.abc_vals = {
-                'da_a': 801, 'a_a': -1, 'freq_a': 24,
-                'da_b': 401, 'a_b': 800, 'freq_b': 16,
-                'da_c': 101, 'a_c': 400, 'freq_c': 12,
-                'da_d': 0, 'a_d': 100, 'freq_d': 0
+                'da_a': 1001, 'a_a': -1, 'freq_a': 20,
+                'da_b': 501, 'a_b': 1000, 'freq_b': 12,
+                'da_c': 121, 'a_c': 500, 'freq_c': 10,
+                'da_d': 0, 'a_d': 120, 'freq_d': 0
             }
 
         col1, col2, col3, col4 = st.columns(4)
@@ -1692,14 +1713,18 @@ def main():
                     st.error("⚠️ Seleziona almeno un venditore")
                 else:
                     abc = st.session_state.abc_vals
-                    res, df_w = run_simulation(df_c, df_v, active_list, col_vol, 
-                                               abc['da_a'], abc['da_b'], abc['da_c'],
-                                               abc['freq_a'], abc['freq_b'], abc['freq_c'],
-                                               dur_visita, ore_effettive_gg, gg_lavoro,
-                                               max_stops_per_day,
-                                               pernotto_attivo, soglia_min_pernotto,
-                                               max_notti_week, max_notti_consecutive,
-                                               hotel_offset_km)
+                    df_c_json = df_c.to_json()
+                    df_v_json = df_v.to_json()
+                    res, df_w = _run_simulation_cached(
+                        df_c_json, df_v_json, active_list, col_vol,
+                        abc['da_a'], abc['da_b'], abc['da_c'],
+                        abc['freq_a'], abc['freq_b'], abc['freq_c'],
+                        dur_visita, ore_effettive_gg, gg_lavoro,
+                        max_stops_per_day,
+                        pernotto_attivo, soglia_min_pernotto,
+                        max_notti_week, max_notti_consecutive,
+                        hotel_offset_km
+                    )
                     if res is None: 
                         st.error(df_w)
                     else:
