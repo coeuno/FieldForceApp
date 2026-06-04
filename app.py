@@ -4,6 +4,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.spatial import ConvexHull
+from sklearn.cluster import KMeans
 import warnings
 import zipfile
 from io import BytesIO
@@ -165,20 +166,9 @@ def compute_hull_coords(df_customers):
 ALGO_VERSION = "v2.1_kmeans_2opt"
 
 
-
-# =============================================================================
-# NUOVE FUNZIONI: CLUSTERING GEOGRAFICO + 2-OPT OTTIMIZZATO + PERNOTTO V2.1
-# =============================================================================
-
-ALGO_VERSION = "v2.1_greedy_2opt_fast"
-
-
 def _tour_2opt(lats, lons, siglas, circuity_dict, speed_dict, start_lat, start_lon, return_home=True):
     """
-    Tour Nearest Neighbor + 2-Opt OTTIMIZZATO.
-    - 2-Opt viene eseguito SOLO se n >= 4 (i tour piccoli non hanno incroci significativi)
-    - max_iterations limitato a 100 (invece di 500)
-    - Early exit se miglioramento < 0.5%
+    Tour Nearest Neighbor + 2-Opt.
     Ritorna: tour_km, ore, end_lat, end_lon, km_andata, km_ritorno, 
              first_lat, first_lon, last_lat, last_lon
     """
@@ -205,81 +195,78 @@ def _tour_2opt(lats, lons, siglas, circuity_dict, speed_dict, start_lat, start_l
         cur_lat = lats[best_idx]
         cur_lon = lons[best_idx]
 
-    # --- Fase 2: 2-Opt (SOLO se n >= 4) ---
+    # --- Fase 2: 2-Opt per eliminare incroci ---
     def _tour_distance(tour_idx):
         if not tour_idx:
             return 0.0
         total = 0.0
+        # Casa -> primo
         first = tour_idx[0]
         circ_start = get_effective_circuity(siglas[first], circuity_dict)
         total += haversine_km(start_lon, start_lat, lons[first], lats[first]) * circ_start
+        # Tra clienti
         for i in range(len(tour_idx) - 1):
             a, b = tour_idx[i], tour_idx[i + 1]
             circ = get_effective_circuity(siglas[b], circuity_dict)
             total += haversine_km(lons[a], lats[a], lons[b], lats[b]) * circ
+        # Ritorno a casa
         if return_home:
             last = tour_idx[-1]
             avg_circ = np.mean([get_effective_circuity(siglas[j], circuity_dict) for j in tour_idx])
             total += haversine_km(lons[last], lats[last], start_lon, start_lat) * avg_circ
         return total
 
-    # Se il tour è piccolo (n < 4), il NN è già quasi ottimo. Salta 2-Opt.
-    if n >= 4:
-        def _2opt_swap(tour_idx, i, k):
-            return tour_idx[:i] + tour_idx[i:k + 1][::-1] + tour_idx[k + 1:]
+    def _2opt_swap(tour_idx, i, k):
+        return tour_idx[:i] + tour_idx[i:k + 1][::-1] + tour_idx[k + 1:]
 
-        improved = True
-        current_tour = tour.copy()
-        current_dist = _tour_distance(current_tour)
-        # Riduci max_iterations: 100 è sufficiente per la maggior parte dei casi reali
-        max_iterations = min(n * n, 100)
+    improved = True
+    current_tour = tour.copy()
+    current_dist = _tour_distance(current_tour)
+    max_iterations = min(n * n, 500)
 
-        for iteration in range(max_iterations):
-            improved = False
-            for i in range(n - 1):
-                for k in range(i + 1, n):
-                    new_tour = _2opt_swap(current_tour, i, k)
-                    new_dist = _tour_distance(new_tour)
-                    if new_dist < current_dist - 0.01:
-                        current_tour = new_tour
-                        current_dist = new_dist
-                        improved = True
-                        break
-                if improved:
+    for _ in range(max_iterations):
+        improved = False
+        for i in range(n - 1):
+            for k in range(i + 1, n):
+                new_tour = _2opt_swap(current_tour, i, k)
+                new_dist = _tour_distance(new_tour)
+                if new_dist < current_dist - 0.01:
+                    current_tour = new_tour
+                    current_dist = new_dist
+                    improved = True
                     break
-            # Early exit: se l'ultima iterazione non ha migliorato, esci
-            if not improved:
+            if improved:
                 break
-        tour = current_tour
 
     # --- Calcolo metriche finali ---
-    first_idx = tour[0]
-    last_idx = tour[-1]
+    first_idx = current_tour[0]
+    last_idx = current_tour[-1]
 
     km_andata = haversine_km(start_lon, start_lat, lons[first_idx], lats[first_idx]) * \
                 get_effective_circuity(siglas[first_idx], circuity_dict)
 
     km_intermediate = 0.0
-    for i in range(len(tour) - 1):
-        a, b = tour[i], tour[i + 1]
+    for i in range(len(current_tour) - 1):
+        a, b = current_tour[i], current_tour[i + 1]
         km_intermediate += haversine_km(lons[a], lats[a], lons[b], lats[b]) * \
                           get_effective_circuity(siglas[b], circuity_dict)
 
     km_ritorno = 0.0
     end_lat, end_lon = lats[last_idx], lons[last_idx]
     if return_home:
-        avg_circ = np.mean([get_effective_circuity(siglas[j], circuity_dict) for j in tour])
+        avg_circ = np.mean([get_effective_circuity(siglas[j], circuity_dict) for j in current_tour])
         km_ritorno = haversine_km(lons[last_idx], lats[last_idx], start_lon, start_lat) * avg_circ
         end_lat, end_lon = start_lat, start_lon
 
     tour_km = km_andata + km_intermediate + km_ritorno
-    speeds = [speed_dict.get(siglas[idx], 45) for idx in tour]
+    speeds = [speed_dict.get(siglas[idx], 45) for idx in current_tour]
     avg_speed = np.mean(speeds) if speeds else 45
 
     return (tour_km, tour_km / avg_speed, end_lat, end_lon, 
             km_andata, km_ritorno, 
             lats[first_idx], lons[first_idx], 
             lats[last_idx], lons[last_idx])
+
 
 def _merge_singleton_clusters(visits_df, max_stops_per_day, soglia_merge_km=50):
     """
@@ -329,8 +316,7 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
                                      max_stops_per_day, circuity_dict, speed_dict,
                                      soglia_merge_km=50):
     """
-    Clustering geografico GREEDY (senza sklearn/K-Means).
-    Algoritmo: prendi il cliente più lontano, raggruppa i più vicini fino a max_stops_per_day.
+    Clustering geografico K-Means con post-processing per singleton e vincolo capacità.
     """
     if len(df_customers) == 0:
         return []
@@ -359,6 +345,7 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
 
     visits_df = pd.DataFrame(visits)
     n_visits = len(visits_df)
+    n_days = max(1, int(np.ceil(n_visits / max_stops_per_day)))
 
     # Caso trivial: una sola giornata
     if n_visits <= max_stops_per_day:
@@ -386,77 +373,85 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
                        for _, r in visits_df.iterrows()]
         }]
 
-    # --- CLUSTERING GREEDY ---
-    # Ordina per distanza da casa (decrescente): i più lontani prima
-    visits_df = visits_df.sort_values('dist', ascending=False).reset_index(drop=True)
+    # Fallback per pochi punti: assegnazione manuale
+    if n_visits <= 3:
+        # Ogni visita è un cluster separato (o tutti insieme se n_visits <= max_stops)
+        visits_df['cluster'] = 0 if n_visits <= max_stops_per_day else range(n_visits)
+    else:
+        n_days = min(n_days, n_visits)
+        kmeans = KMeans(n_clusters=n_days, random_state=42, n_init=10)
+        visits_df['cluster'] = kmeans.fit_predict(visits_df[['lat', 'lon']].values)
 
+        # Merge singleton
+        visits_df = _merge_singleton_clusters(visits_df, max_stops_per_day, soglia_merge_km)
+
+    # --- Genera giornate con sub-clustering per capacità ---
     giornate = []
-    assigned = set()
+    for cid in sorted(visits_df['cluster'].unique()):
+        cluster_df = visits_df[visits_df['cluster'] == cid].copy()
 
-    while len(assigned) < n_visits:
-        # Trova il cliente non assegnato più lontano
-        unassigned = visits_df[~visits_df.index.isin(assigned)]
-        if len(unassigned) == 0:
-            break
-
-        seed_idx = unassigned.index[0]  # il più lontano
-        seed = visits_df.loc[seed_idx]
-
-        # Inizia un nuovo cluster con il seed
-        cluster_indices = [seed_idx]
-        assigned.add(seed_idx)
-
-        # Aggiungi i più vicini fino a max_stops_per_day
-        while len(cluster_indices) < max_stops_per_day:
-            remaining = visits_df[~visits_df.index.isin(assigned)]
-            if len(remaining) == 0:
-                break
-
-            # Trova il più vicino al centroide del cluster corrente
-            cluster_lats = [visits_df.loc[i, 'lat'] for i in cluster_indices]
-            cluster_lons = [visits_df.loc[i, 'lon'] for i in cluster_indices]
-            centroid_lat = np.mean(cluster_lats)
-            centroid_lon = np.mean(cluster_lons)
-
-            # Distanza dal centroide
-            remaining['dist_to_centroid'] = remaining.apply(
-                lambda row: haversine_km(centroid_lon, centroid_lat, row['lon'], row['lat']), 
-                axis=1
+        if len(cluster_df) > max_stops_per_day:
+            n_sub = int(np.ceil(len(cluster_df) / max_stops_per_day))
+            sub_kmeans = KMeans(n_clusters=n_sub, random_state=42, n_init=10)
+            cluster_df['sub_cluster'] = sub_kmeans.fit_predict(
+                cluster_df[['lat', 'lon']].values
             )
-            nearest_idx = remaining['dist_to_centroid'].idxmin()
 
-            cluster_indices.append(nearest_idx)
-            assigned.add(nearest_idx)
+            for sid in sorted(cluster_df['sub_cluster'].unique()):
+                sub_df = cluster_df[cluster_df['sub_cluster'] == sid].copy()
+                if len(sub_df) == 0:
+                    continue
 
-        # Crea la giornata
-        cluster_df = visits_df.loc[cluster_indices]
-
-        km, ore, end_lat, end_lon, km_andata, km_ritorno, \
-        f_lat, f_lon, l_lat, l_lon = _tour_2opt(
-            cluster_df['lat'].values, cluster_df['lon'].values,
-            cluster_df['sigla'].values,
-            circuity_dict, speed_dict, rep_home_lat, rep_home_lon,
-            return_home=True
-        )
-
-        giornate.append({
-            'sector': len(giornate),
-            'n_visite': len(cluster_df),
-            'km': km,
-            'ore_viaggio': ore,
-            'km_andata': km_andata,
-            'km_ritorno': km_ritorno,
-            'km_tour': km - km_andata - km_ritorno,
-            'first_lat': f_lat,
-            'first_lon': f_lon,
-            'last_lat': l_lat,
-            'last_lon': l_lon,
-            'sigle': cluster_df['sigla'].tolist(),
-            'clienti': [{'lat': r['lat'], 'lon': r['lon'], 'sigla': r['sigla']} 
-                       for _, r in cluster_df.iterrows()]
-        })
+                km, ore, end_lat, end_lon, km_andata, km_ritorno, \
+                f_lat, f_lon, l_lat, l_lon = _tour_2opt(
+                    sub_df['lat'].values, sub_df['lon'].values,
+                    sub_df['sigla'].values,
+                    circuity_dict, speed_dict, rep_home_lat, rep_home_lon,
+                    return_home=True
+                )
+                giornate.append({
+                    'sector': cid,
+                    'n_visite': len(sub_df),
+                    'km': km,
+                    'ore_viaggio': ore,
+                    'km_andata': km_andata,
+                    'km_ritorno': km_ritorno,
+                    'km_tour': km - km_andata - km_ritorno,
+                    'first_lat': f_lat,
+                    'first_lon': f_lon,
+                    'last_lat': l_lat,
+                    'last_lon': l_lon,
+                    'sigle': sub_df['sigla'].tolist(),
+                    'clienti': [{'lat': r['lat'], 'lon': r['lon'], 'sigla': r['sigla']} 
+                               for _, r in sub_df.iterrows()]
+                })
+        else:
+            km, ore, end_lat, end_lon, km_andata, km_ritorno, \
+            f_lat, f_lon, l_lat, l_lon = _tour_2opt(
+                cluster_df['lat'].values, cluster_df['lon'].values,
+                cluster_df['sigla'].values,
+                circuity_dict, speed_dict, rep_home_lat, rep_home_lon,
+                return_home=True
+            )
+            giornate.append({
+                'sector': cid,
+                'n_visite': len(cluster_df),
+                'km': km,
+                'ore_viaggio': ore,
+                'km_andata': km_andata,
+                'km_ritorno': km_ritorno,
+                'km_tour': km - km_andata - km_ritorno,
+                'first_lat': f_lat,
+                'first_lon': f_lon,
+                'last_lat': l_lat,
+                'last_lon': l_lon,
+                'sigle': cluster_df['sigla'].tolist(),
+                'clienti': [{'lat': r['lat'], 'lon': r['lon'], 'sigla': r['sigla']} 
+                           for _, r in cluster_df.iterrows()]
+            })
 
     return giornate
+
 
 def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min, 
                          max_notti_week, max_notti_consecutive, hotel_offset_km, 
