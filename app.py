@@ -11,8 +11,7 @@ from io import StringIO
 import colorsys
 warnings.filterwarnings('ignore')
 
-# CORREZIONE: page_icon=None invece di ""
-st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon=None)
+st.set_page_config(page_title="🎯 Field Force Downsizing Simulator", layout="wide", page_icon="")
 
 # =============================================================================
 # HELPER: FORMATTAZIONE EUROPEA NUMERI
@@ -88,9 +87,13 @@ PROVINCIAL_SPEED = {
     "FC": 50, "PU": 48
 }
 
+# Fattore di congestione per città metropolitane e medie
+# Le grandi città hanno traffico intenso anche su brevi tragitti
 CONGESTION_FACTOR = {
+    # Città metropolitane (circuity +60%)
     "MI": 1.60, "RM": 1.60, "NA": 1.60, "TO": 1.60, "GE": 1.60,
     "BO": 1.60, "FI": 1.60, "VE": 1.60, "BA": 1.60, "CT": 1.60, "PA": 1.60,
+    # Città medie (circuity +30%)
     "BG": 1.30, "BS": 1.30, "CO": 1.30, "VA": 1.30, "VR": 1.30, "VI": 1.30,
     "PD": 1.30, "TV": 1.30, "RO": 1.30, "PC": 1.30, "PR": 1.30, "RE": 1.30,
     "MO": 1.30, "FE": 1.30, "RA": 1.30, "RN": 1.30, "FO": 1.30, "FC": 1.30,
@@ -110,10 +113,14 @@ CONGESTION_FACTOR = {
 }
 
 def get_effective_circuity(sigla, base_circuity_dict):
+    """Restituisce il circuity effettivo includendo congestione città."""
     base = base_circuity_dict.get(sigla, 1.35)
     congestion = CONGESTION_FACTOR.get(sigla, 1.0)
     return base * congestion
 
+# =============================================================================
+# FUNZIONI CORE
+# =============================================================================
 def haversine_km(lon1, lat1, lon2, lat2):
     lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
     dlon, dlat = lon2 - lon1, lat2 - lat1
@@ -142,13 +149,50 @@ def compute_hull_coords(df_customers):
     except:
         return None, None
 
+# =============================================================================
+# MODELLO BACINI POLARI + NN PER GIORNATA
+# =============================================================================
+
+# =============================================================================
+# NUOVE FUNZIONI: PERNOTTO, ALPHA SHAPES, PALETTE, CACHE
+# =============================================================================
+
+
+# =============================================================================
+# NUOVE FUNZIONI: CLUSTERING GEOGRAFICO + 2-OPT + PERNOTTO INTELLIGENTE (V2.1)
+# =============================================================================
+
+ALGO_VERSION = "v2.1_kmeans_2opt"
+
+
+
+# =============================================================================
+# NUOVE FUNZIONI: CLUSTERING GEOGRAFICO + 2-OPT OTTIMIZZATO + PERNOTTO V2.1
+# =============================================================================
+
+ALGO_VERSION = "v2.2_greedy_ultra"
+
+
+
+# =============================================================================
+# NUOVE FUNZIONI: CLUSTERING GREEDY ULTRA-FAST + 2-OPT LITE + PERNOTTO V2.1
+# =============================================================================
+
 ALGO_VERSION = "v2.2_greedy_fast_v2"
 
+
 def _tour_2opt(lats, lons, siglas, circuity_dict, speed_dict, start_lat, start_lon, return_home=True):
+    """
+    Tour NN + 2-Opt LITE.
+    - 2-Opt SOLO se n >= 5 (tour piccoli non hanno incroci significativi)
+    - max_iterations = 50 (invece di 100)
+    - Early exit immediato
+    """
     n = len(lats)
     if n == 0:
         return 0.0, 0.0, start_lat, start_lon, 0.0, 0.0, start_lat, start_lon, start_lat, start_lon
 
+    # Nearest Neighbor
     remaining = set(range(n))
     tour = []
     cur_lat, cur_lon = start_lat, start_lon
@@ -160,6 +204,7 @@ def _tour_2opt(lats, lons, siglas, circuity_dict, speed_dict, start_lat, start_l
         cur_lat = lats[best_idx]
         cur_lon = lons[best_idx]
 
+    # 2-Opt solo per tour significativi
     if n >= 5:
         def _tour_dist(tour_idx):
             if not tour_idx: return 0.0
@@ -195,6 +240,7 @@ def _tour_2opt(lats, lons, siglas, circuity_dict, speed_dict, start_lat, start_l
             if not improved: break
         tour = current_tour
 
+    # Metriche
     first_idx, last_idx = tour[0], tour[-1]
     km_andata = haversine_km(start_lon, start_lat, lons[first_idx], lats[first_idx]) * \
                 get_effective_circuity(siglas[first_idx], circuity_dict)
@@ -223,6 +269,12 @@ def _tour_2opt(lats, lons, siglas, circuity_dict, speed_dict, start_lat, start_l
 
 def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon, 
                                      max_stops_per_day, circuity_dict, speed_dict):
+    """
+    Clustering greedy ULTRA-FAST.
+    - Precalcola distanze da casa una sola volta
+    - Seed = cliente più lontano, poi aggiunge i più vicini al SEED (non al centroide)
+    - NO apply(), NO centroidi ricalcolati
+    """
     if len(df_customers) == 0:
         return []
 
@@ -231,6 +283,7 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
     if total_visits == 0:
         return []
 
+    # Espandi visite
     visits = []
     for idx, row in df.iterrows():
         freq = int(row['freq_visite']) if pd.notna(row['freq_visite']) else 0
@@ -268,10 +321,14 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
                        for _, r in visits_df.iterrows()]
         }]
 
+    # --- CLUSTERING GREEDY ULTRA-FAST ---
+    # Ordina per distanza da casa (decrescente)
     visits_df = visits_df.sort_values('dist_home', ascending=False).reset_index(drop=True)
 
+    # Precalcola matrice distanze tra tutti i clienti (una sola volta!)
     coords = visits_df[['lat', 'lon']].values
     n = len(coords)
+    # Matrice distanze: solo metà superiore (simmetrica)
     dist_matrix = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
@@ -283,6 +340,7 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
     giornate = []
 
     while not assigned.all():
+        # Trova primo non assegnato (il più lontano da casa)
         unassigned_idx = np.where(~assigned)[0]
         if len(unassigned_idx) == 0:
             break
@@ -291,17 +349,21 @@ def create_geographic_daily_clusters(df_customers, rep_home_lat, rep_home_lon,
         cluster_indices = [seed_idx]
         assigned[seed_idx] = True
 
+        # Aggiungi i più vicini al SEED (non ricalcolare centroide!)
         while len(cluster_indices) < max_stops_per_day:
             remaining = np.where(~assigned)[0]
             if len(remaining) == 0:
                 break
 
+            # Trova il più vicino a qualsiasi cliente nel cluster
+            # (usa distanza minima a qualsiasi membro del cluster)
             min_dists = np.min(dist_matrix[np.ix_(remaining, cluster_indices)], axis=1)
             nearest_idx = remaining[np.argmin(min_dists)]
 
             cluster_indices.append(nearest_idx)
             assigned[nearest_idx] = True
 
+        # Crea giornata
         cluster_df = visits_df.iloc[cluster_indices]
 
         km, ore, end_lat, end_lon, km_andata, km_ritorno, \
@@ -335,6 +397,9 @@ def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min,
                          max_notti_week, max_notti_consecutive, hotel_offset_km, 
                          gg_lavoro, circuity_dict, speed_dict,
                          anti_schizofrenia_factor=0.75):
+    """
+    Pernottamento con logica anti-schizofrenia parametrizzabile.
+    """
     n = len(giornate)
     if n < 2:
         return 0.0, 0.0, []
@@ -344,6 +409,7 @@ def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min,
     soglia_km = (soglia_min / 60.0) * avg_speed
     max_notti_anno = max(1, int((gg_lavoro / 7.0) * max_notti_week))
 
+    # Calcola hotel e distanza da casa per ogni giornata
     for g in giornate:
         clienti = g.get('clienti', [])
         if len(clienti) > 0:
@@ -354,6 +420,9 @@ def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min,
         g['dist_da_casa'] = haversine_km(g['hotel_lon'], g['hotel_lat'], 
                                           home_lon, home_lat)
 
+    # --- ORDINA GIORNATE PER DISTANZA DA CASA (crescente) ---
+    # Questo migliora la coerenza del pernottamento: le giornate più lontane
+    # sono consecutive nel vettore, facilitando coppie logiche
     giornate.sort(key=lambda x: x['dist_da_casa'])
 
     coppie = []
@@ -368,6 +437,7 @@ def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min,
         costo_nuovo = dist_to_hotel + hotel_offset_km
         risparmio = costo_attuale - costo_nuovo
 
+        # Anti-schizofrenia: blocca se il giorno dopo è troppo vicino a casa
         troppo_vicino = g_j['dist_da_casa'] < (anti_schizofrenia_factor * soglia_km)
 
         if risparmio > soglia_km and not troppo_vicino:
@@ -386,6 +456,7 @@ def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min,
         best_mission = (i, i + 1, risp, 1)
         used_mission = False
 
+        # Verifica 2 notti consecutive
         if max_notti_consecutive >= 2 and (i + 2) < n and not used[i + 2]:
             g_i, g_i1, g_i2 = giornate[i], giornate[i + 1], giornate[i + 2]
 
@@ -416,6 +487,7 @@ def optimize_pernotto_v2(giornate, home_lat, home_lon, soglia_min,
             notti_usate += 1
         missioni.append(best_mission)
 
+    # Applica delta
     total_delta_km, total_delta_ore, dettaglio = 0.0, 0.0, []
     for start, end, risp_tot, n_notti in missioni:
         for idx in range(start, end):
@@ -459,6 +531,9 @@ def calculate_travel_km_tours_v2(df_customers, rep_home_lat, rep_home_lon,
                                  max_notti_week=1, max_notti_consecutive=2,
                                  hotel_offset_km=10, gg_lavoro=220,
                                  anti_schizofrenia_factor=0.75):
+    """
+    Versione 2.1: clustering K-Means + 2-Opt + pernottamento anti-schizofrenico.
+    """
     if len(df_customers) == 0:
         return 0.0, 0.0, [], 0
 
@@ -489,6 +564,7 @@ def calculate_travel_km_tours_v2(df_customers, rep_home_lat, rep_home_lon,
     return total_km, total_ore, giornate, n_pernotti
 
 def compute_alpha_shape(df_customers, alpha_factor=0.15):
+    """Concave hull via negative buffer su ConvexHull (richiede shapely)."""
     try:
         from shapely.geometry import MultiPoint
         pts = df_customers[['longitudine', 'latitudine']].values
@@ -516,11 +592,13 @@ def compute_alpha_shape(df_customers, alpha_factor=0.15):
 
 
 def build_territory_map(df_work, df_v, active_reps, title=""):
+    """Genera la mappa territori Plotly con Alpha Shapes e palette ottimizzata."""
     df_map = df_work.dropna(subset=['latitudine', 'longitudine', 'assigned_rep'])
     fig = go.Figure()
     if len(df_map) == 0:
         return fig
 
+    # Palette HSV altamente distinguibile (golden ratio)
     def hsv_palette(n):
         pal = []
         for i in range(n):
@@ -534,6 +612,7 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
     colors = hsv_palette(len(active_reps))
     rep_colors = {r: colors[i] for i, r in enumerate(active_reps)}
 
+    # Alpha shapes per territori
     for rep in active_reps:
         sub = df_map[df_map['assigned_rep'] == rep]
         if len(sub) >= 3:
@@ -559,6 +638,7 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
                         hoverinfo='name'
                     ))
 
+    # Clienti per classe con dimensioni differenziate
     classe_colors = {'A': '#e53935', 'B': '#fb8c00', 'C': '#1e88e5', 'D': '#9e9e9e'}
     classe_sizes = {'A': 9, 'B': 6, 'C': 4, 'D': 2}
     for classe in ['A', 'B', 'C', 'D']:
@@ -574,6 +654,7 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
                 hoverinfo='name+text'
             ))
 
+    # Home base venditori
     df_v_active = df_v[df_v['sales rep'].isin(active_reps)].dropna(subset=['latitudine', 'longitudine'])
     if len(df_v_active) > 0:
         fig.add_trace(go.Scattermapbox(
@@ -609,11 +690,13 @@ def build_territory_map(df_work, df_v, active_reps, title=""):
     return fig
 
 
+# @st.cache_data(ttl=3600, show_spinner=False)  # DISABILITATO PER TEST
 def _run_simulation_cached(df_c_json, df_v_json, active_list, col_vol, da_a, da_b, da_c,
                            freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
                            max_stops_per_day, pernotto_attivo, soglia_min_pernotto,
                            max_notti_week, max_notti_consecutive, hotel_offset_km,
                            algo_version=ALGO_VERSION):
+    """Wrapper cached per run_simulation."""
     df_c = pd.read_json(StringIO(df_c_json))
     df_v = pd.read_json(StringIO(df_v_json))
     return run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
@@ -621,7 +704,6 @@ def _run_simulation_cached(df_c_json, df_v_json, active_list, col_vol, da_a, da_
                           max_stops_per_day,
                           pernotto_attivo, soglia_min_pernotto,
                           max_notti_week, max_notti_consecutive, hotel_offset_km)
-                          
 def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
                    freq_a, freq_b, freq_c, dur_visita, ore_gg, gg_lavoro,
                    max_stops_per_day,
@@ -640,6 +722,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_w = df_c.copy()
     df_w[col_vol] = pd.to_numeric(df_w[col_vol], errors='coerce').fillna(0)
 
+    # Assegnazione venditori (sempre assegnazione attuale dal file Excel o da riassegnazione)
     if 'sales rep' not in df_w.columns:
         return None, "Errore: colonna 'sales rep' mancante nel foglio clienti."
     df_w['assigned_rep'] = df_w['sales rep']
@@ -657,8 +740,10 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     )
     df_w['assegnazione'] = 'attuale'
 
+    # Classificazione ABC su tutti i clienti assegnati
     df_w = classify_abc(df_w, col_vol, da_a, da_b, da_c)
 
+    # Aggregati completi per venditore (inclusi D)
     agg_list = []
     for rep in active_list:
         sub = df_w[df_w['assigned_rep'] == rep]
@@ -681,10 +766,12 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
             })
     agg = pd.DataFrame(agg_list)
 
+    # Filtra clienti attivi (A,B,C) per la logica visite e km
     df_work = df_w[df_w['classe'] != 'D'].copy()
     if len(df_work) == 0:
         return None, "Nessun cliente attivo sopra la soglia minima C."
 
+    # Coordinate venditore su df_work
     df_work['rep_lat'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['latitudine'])
     df_work['rep_lon'] = df_work['assigned_rep'].map(df_v_valid.set_index('sales rep')['longitudine'])
     if 'sigla' in df_v_valid.columns:
@@ -696,6 +783,7 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     df_work['freq_visite'] = df_work['classe'].map(freq_map)
     df_work['ore_visita_annue'] = (df_work['freq_visite'] * dur_visita) / 60.0
 
+    # Calcolo km e ore viaggio
     travel_data = []
     for rep in active_list:
         sub = df_work[df_work['assigned_rep'] == rep]
@@ -715,8 +803,10 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
 
     travel_df = pd.DataFrame(travel_data)
     agg = agg.merge(travel_df, on='sales_rep', how='left').fillna(0)
+    # km medi al giorno
     agg['km_giorno'] = agg['km_annui'] / gg_lavoro
 
+    # Ore visite aggregate
     visite_agg = df_work.groupby('assigned_rep').agg(
         ore_visite_annue=('ore_visita_annue', 'sum')
     ).reset_index().rename(columns={'assigned_rep': 'sales_rep'})
@@ -734,7 +824,15 @@ def run_simulation(df_c, df_v, active_list, col_vol, da_a, da_b, da_c,
     result = result.sort_values('saturazione_pct', ascending=False)
     return result, df_work
 
+# =============================================================================
+# FUNZIONI DOWNSIZE
+# =============================================================================
 def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=9999):
+    """
+    Rank riceventi per combinazione distanza (dal centroide del loro bacino esistente) / saturazione.
+    La distanza media dei clienti orfani è calcolata dal centroide dei clienti che il ricevente
+    già visita, non dalla sua casa base. Questo è molto più realistico per un tour di lavoro.
+    """
     df_v_valid = df_v.dropna(subset=['latitudine', 'longitudine'])
     scores = []
     for rep in active_reps:
@@ -742,6 +840,7 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
         if len(rep_rows) == 0:
             continue
 
+        # --- CENTROIDE DEL BACINO ESISTENTE ---
         rep_clients = df_c[df_c['sales rep'] == rep].dropna(subset=['latitudine', 'longitudine'])
         if len(rep_clients) > 0:
             centroid_lat = rep_clients['latitudine'].mean()
@@ -751,15 +850,18 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
             centroid_lat = rep_row['latitudine']
             centroid_lon = rep_row['longitudine']
 
+        # Distanza media dai clienti orfani al centroide del bacino del ricevente
         dists = orphan_df.apply(
             lambda row: haversine_km(row['longitudine'], row['latitudine'], centroid_lon, centroid_lat),
             axis=1
         )
         avg_dist = dists.mean() if len(dists) > 0 else 9999
 
+        # Filtra per max_km
         if avg_dist > max_km:
             continue
 
+        # Saturazione attuale
         if current_result is not None and rep in current_result['sales_rep'].values:
             sat = current_result[current_result['sales_rep'] == rep]['saturazione_pct'].iloc[0]
         else:
@@ -767,6 +869,7 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
 
         cap_residua = max(0.0, 100.0 - sat)
 
+        # Score: più alto = migliore
         dist_score = max(0.0, 1.0 - avg_dist / 300.0)
         sat_score = cap_residua / 100.0
         score = 0.4 * dist_score + 0.6 * sat_score
@@ -776,7 +879,14 @@ def rank_receivers(orphan_df, df_c, df_v, current_result, active_reps, max_km=99
     scores.sort(key=lambda x: x[1], reverse=True)
     return scores
 
+
+
 def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
+    """
+    Preview: ogni cliente orfano va al ricevente più vicino tra i selezionati.
+    La distanza è calcolata dal centroide del bacino esistente di ogni ricevente.
+    """
+    # Calcola centroide per ogni ricevente
     v_centroids = {}
     for r in selected_receivers:
         rep_clients = df_c[df_c['sales rep'] == r].dropna(subset=['latitudine', 'longitudine'])
@@ -786,6 +896,7 @@ def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
                 rep_clients['longitudine'].mean()
             )
         else:
+            # Fallback: casa base
             rep_rows = df_v.dropna(subset=['latitudine', 'longitudine'])
             rep_rows = rep_rows[rep_rows['sales rep'] == r]
             if len(rep_rows) > 0:
@@ -811,7 +922,10 @@ def preview_allocation(orphan_df, selected_receivers, df_c, df_v):
             allocation[best_r].append((idx, best_d))
     return allocation
 
+
+
 def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
+    """Applica la riassegnazione: ogni cliente orfano al ricevente più vicino (dal centroide bacino)."""
     df = df_c.copy()
     orphan_mask = df['sales rep'] == removed_rep
     if not orphan_mask.any():
@@ -819,6 +933,7 @@ def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
 
     orphan_df = df[orphan_mask].copy()
 
+    # Calcola centroidi bacini riceventi
     v_centroids = {}
     for r in selected_receivers:
         rep_clients = df[df['sales rep'] == r].dropna(subset=['latitudine', 'longitudine'])
@@ -852,7 +967,10 @@ def apply_reassignment(df_c, removed_rep, selected_receivers, df_v):
 
     return df
 
+
+
 def render_html_table(headers, rows, font_size="12px"):
+    """Renderizza una tabella HTML con bordi e stile."""
     header_html = "".join([
         f'<th style="border:1px solid #555;background:#333;color:#fff;padding:6px 8px;text-align:center;font-size:{font_size};">{h}</th>'
         for h in headers
@@ -871,9 +989,14 @@ def render_html_table(headers, rows, font_size="12px"):
         f'<tbody>{rows_html}</tbody></table>'
     )
 
+# =============================================================================
+# NUOVE FUNZIONI: MAPPE & EXPORT
+# =============================================================================
 def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receivers, title=""):
+    """Mappa di riassegnazione con frecce cliente → ricevente e home base venditore rimosso."""
     fig = go.Figure()
 
+    # Home base venditore rimosso (X nera)
     removed_home = df_v[df_v['sales rep'] == removed_rep].dropna(subset=['latitudine', 'longitudine'])
     if len(removed_home) > 0:
         fig.add_trace(go.Scattermapbox(
@@ -893,6 +1016,7 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
         recv_lat = recv_home.iloc[0]['latitudine']
         recv_lon = recv_home.iloc[0]['longitudine']
 
+        # Home base ricevente
         fig.add_trace(go.Scattermapbox(
             lat=[recv_lat],
             lon=[recv_lon],
@@ -901,10 +1025,12 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
             name=f'🏠 {receiver}'
         ))
 
+        # Clienti assegnati a questo ricevente
         if receiver in allocation and len(allocation[receiver]) > 0:
             assigned_indices = [idx for idx, _ in allocation[receiver]]
             sub = orphan_df.loc[assigned_indices]
 
+            # Linee (frecce) da cliente a ricevente
             for idx, row in sub.iterrows():
                 fig.add_trace(go.Scattermapbox(
                     mode='lines',
@@ -916,6 +1042,7 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
                     hoverinfo='skip'
                 ))
 
+            # Marker clienti orfani
             hover_text = []
             for idx, row in sub.iterrows():
                 nome = row.get('ragione sociale', row.get('cliente', f'Cliente {idx}'))
@@ -951,7 +1078,9 @@ def generate_reassignment_map(orphan_df, allocation, df_v, removed_rep, receiver
     )
     return fig
 
+
 def fig_to_png(fig):
+    """Converte figura Plotly in bytes PNG. Richiede kaleido."""
     try:
         import plotly.io as pio
         img_bytes = pio.to_image(fig, format="png", width=1600, height=1000, scale=2)
@@ -960,18 +1089,24 @@ def fig_to_png(fig):
         st.warning(f"⚠️ Export PNG fallito (serve `pip install kaleido`): {e}")
         return None
 
+
 def generate_excel_report(initial_result, final_result, reassignment_history, removal_details, col_vol):
+    """Genera Excel multi-foglio: Iniziale, Finale, Confronto, Dettaglio, Variazioni."""
     if initial_result is None or final_result is None:
         return None
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # 1. Stato Iniziale
         init_sheet = initial_result.copy()
         init_sheet.to_excel(writer, sheet_name='Stato Iniziale', index=False)
 
+        # 2. Stato Finale
         final_sheet = final_result.copy()
         final_sheet.to_excel(writer, sheet_name='Stato Finale', index=False)
 
+        # 3. Confronto Orizzontale
+        # Colonne = venditori (prima tutti quelli iniziali, poi tutti quelli finali)
         all_reps = sorted(set(init_sheet['sales_rep'].tolist() + final_sheet['sales_rep'].tolist()))
         metrics = ['n_clienti', 'n_classe_a', 'n_classe_b', 'n_classe_c', 'n_classe_d',
                    'volume_abc', 'volume_d', 'ore_visite_annue', 'ore_viaggio_annue',
@@ -994,6 +1129,7 @@ def generate_excel_report(initial_result, final_result, reassignment_history, re
         confronto_df = pd.DataFrame(confronto_data, index=metric_labels)
         confronto_df.to_excel(writer, sheet_name='Confronto Orizzontale')
 
+        # 4. Dettaglio Riassegnazioni (con provenienza)
         dettagli_rows = []
         for hist in reassignment_history:
             removed = hist['removed']
@@ -1020,6 +1156,7 @@ def generate_excel_report(initial_result, final_result, reassignment_history, re
         if dettagli_rows:
             pd.DataFrame(dettagli_rows).to_excel(writer, sheet_name='Dettaglio Riassegnazioni', index=False)
 
+        # 5. Variazioni
         variazioni = []
         for rep in all_reps:
             init_row = init_sheet[init_sheet['sales_rep'] == rep]
@@ -1040,13 +1177,18 @@ def generate_excel_report(initial_result, final_result, reassignment_history, re
             variazioni.append(row)
         pd.DataFrame(variazioni).to_excel(writer, sheet_name='Variazioni', index=False)
 
+        # 6. Riepilogo Step
         if reassignment_history:
             pd.DataFrame(reassignment_history).to_excel(writer, sheet_name='Riepilogo Step', index=False)
 
     output.seek(0)
     return output
 
+# =============================================================================
+# INTERFACCIA
+# =============================================================================
 def main():
+    # Inizializzazione stato sessione
     if 'df_c_original' not in st.session_state: st.session_state.df_c_original = None
     if 'df_c_working' not in st.session_state: st.session_state.df_c_working = None
     if 'removed_reps' not in st.session_state: st.session_state.removed_reps = []
@@ -1063,6 +1205,7 @@ def main():
     if 'min_vol' not in st.session_state: st.session_state.min_vol = 0
     if 'max_km_filter' not in st.session_state: st.session_state.max_km_filter = 200
 
+    # --- NUOVO: stato per export avanzato ---
     if 'initial_result' not in st.session_state: st.session_state.initial_result = None
     if 'initial_df_work' not in st.session_state: st.session_state.initial_df_work = None
     if 'initial_fig' not in st.session_state: st.session_state.initial_fig = None
@@ -1087,6 +1230,9 @@ def main():
     st.title("🎯 Field Force Downsizing Simulator")
     st.markdown("*Simulatore strategico per ottimizzazione rete vendita Italia*")
 
+    # =============================================================================
+    # SIDEBAR
+    # =============================================================================
     with st.sidebar:
         st.markdown('<div class="sidebar-button">', unsafe_allow_html=True)
         manual_run = st.button("🚀 LANCIA SIMULAZIONE", type="primary", use_container_width=True)
@@ -1112,6 +1258,7 @@ def main():
             st.session_state.current_df_work = None
             st.session_state.current_params = {}
             st.session_state.current_df_v = None
+            # --- reset export state ---
             st.session_state.initial_result = None
             st.session_state.initial_df_work = None
             st.session_state.initial_fig = None
@@ -1142,6 +1289,7 @@ def main():
             st.error("❌ Colonna 'sales rep' mancante nel foglio clienti.")
             return
 
+        # Inizializza working set se necessario
         if st.session_state.df_c_original is None:
             st.session_state.df_c_original = df_c.copy()
         if st.session_state.df_c_working is None:
@@ -1169,6 +1317,7 @@ def main():
         else:
             col_vol = selected_vol_cols[0]
 
+        # --- TABELLA VOLUMI BRAND SIDEBAR ---
         st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
         vol_rows = []
         grand_total = 0.0
@@ -1226,11 +1375,18 @@ def main():
                     default_val = st.session_state.rep_status_prev.get(r, True)
                     rep_status[r] = st.checkbox(r, value=default_val, key=f"rep_{r}")
 
+    # =============================================================================
+    # DOPO SIDEBAR: usa il working set come fonte di verità
+    # =============================================================================
     df_c = st.session_state.df_c_working
 
+    # --- RIGENERA COLONNA VOLUME CALCOLATA ---
     if 'selected_vol_cols' in locals() and len(selected_vol_cols) > 1:
         df_c['volume_calcolato'] = df_c[selected_vol_cols].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1)
 
+    # =============================================================================
+    # RILEVAMENTO RIMOZIONE VENDITORE
+    # =============================================================================
     if uploaded and not st.session_state.get('pending_removal'):
         for r in reps:
             if r not in removed_reps:
@@ -1246,6 +1402,9 @@ def main():
                     }
                     st.rerun()
 
+    # =============================================================================
+    # PANNELLO DI RIASSEGNAZIONE
+    # =============================================================================
     if st.session_state.get('pending_removal'):
         rem = st.session_state.pending_removal
         removed_name = rem['rep']
@@ -1278,6 +1437,7 @@ def main():
                     st.rerun()
             st.stop()
 
+        # --- TABELLA CLIENTI ORFANI (ORIZZONTALE) ---
         orphan_df = classify_abc(orphan_df, col_vol, 
                                   st.session_state.abc_vals['da_a'],
                                   st.session_state.abc_vals['da_b'],
@@ -1295,6 +1455,7 @@ def main():
 
         st.markdown(f"### 📍 {n_orfani} clienti orfani da {removed_name}")
 
+        # Tabella orizzontale: colonne = classi con emoji colorati, righe = metriche
         orphan_headers = ['Metrica', '🟢 Cliente A', '🟡 Cliente B', '🔴 Cliente C', '⚫ Cliente D', '🔵 Totali']
         orphan_rows = [
             ['N. clienti', str(n_a), str(n_b), str(n_c), str(n_d), f'**{n_orfani}**'],
@@ -1309,6 +1470,7 @@ def main():
 
         active_reps = [r for r in reps if r != removed_name and r not in removed_reps]
 
+        # Filtro distanza massima
         max_km = st.number_input(
             "Max distanza media (km) per considerare un ricevente",
             min_value=10, max_value=1000,
@@ -1324,6 +1486,7 @@ def main():
             st.warning(f"Nessun ricevente entro {max_km} km. Prova ad aumentare la distanza massima.")
             st.stop()
 
+        # CSS per checkbox rosse (stile sidebar)
         st.markdown("""
         <style>
         [data-testid="stCheckbox"] > label > div[role="checkbox"] {
@@ -1340,10 +1503,12 @@ def main():
         </style>
         """, unsafe_allow_html=True)
 
+        # Prepara dati riceventi base (senza saturazione futura precalcolata)
         recv_data = []
         for i, (rep, score, avg_dist, sat, cap) in enumerate(ranked):
             is_suggested = i < 3
 
+            # Clienti A-B-C attuali del ricevente
             rep_current_clients = st.session_state.df_c_working[
                 st.session_state.df_c_working['sales rep'] == rep
             ].copy()
@@ -1392,6 +1557,7 @@ def main():
 
         selected_receivers = edited[edited['Seleziona']]['Ricevente'].tolist()
 
+        # --- BOTTONE CALCOLO SATURAZIONE FUTURA ---
         calc_col1, calc_col2 = st.columns([1, 3])
         with calc_col1:
             calc_pressed = st.button(
@@ -1405,12 +1571,15 @@ def main():
             with st.spinner("Calcolo scenario in corso... (può richiedere qualche secondo)"):
                 abc = st.session_state.abc_vals
 
+                # 1. Applica riassegnazione temporanea con SOLO i riceventi selezionati
                 df_temp = apply_reassignment(
                     st.session_state.df_c_working, removed_name, selected_receivers, df_v
                 )
 
+                # 2. Tutti i venditori attivi dalla sidebar (inclusi i riceventi selezionati)
                 temp_active = [r for r in reps if r not in st.session_state.removed_reps and rep_status.get(r, True)]
 
+                # 3. Simulazione completa UNA SOLA VOLTA
                 df_temp_json = df_temp.to_json()
                 df_v_json = df_v.to_json()
                 temp_res, _ = _run_simulation_cached(
@@ -1424,8 +1593,10 @@ def main():
                     hotel_offset_km
                 )
 
+                # 4. Calcola allocazione per contare clienti aggiuntivi per ogni ricevente
                 alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
 
+                # 5. Estrai risultati per ogni ricevente selezionato
                 future_results = {}
                 for rep in selected_receivers:
                     fut_sat = None
@@ -1447,10 +1618,12 @@ def main():
                         'add_abc': add_abc
                     }
 
+                # Salva in session state per visualizzazione
                 st.session_state[f"future_results_{removed_name}"] = future_results
                 st.session_state[f"last_selected_{removed_name}"] = sorted(selected_receivers)
             st.rerun()
 
+        # --- MOSTRA RISULTATI CALCOLATI ---
         future_results = st.session_state.get(f"future_results_{removed_name}", {})
         last_selected = st.session_state.get(f"last_selected_{removed_name}", [])
 
@@ -1512,11 +1685,13 @@ def main():
             else:
                 st.info("Nessun cliente assegnato ai riceventi selezionati")
 
+        # --- BOTTONI CONFERMA / ANNULLA ---
         st.divider()
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
             if st.button("✅ Conferma Riassegnazione", use_container_width=True, disabled=(not selected_receivers)):
                 if selected_receivers:
+                    # --- NUOVO: cattura mappa e dettagli PRIMA di modificare lo stato ---
                     alloc = preview_allocation(orphan_df, selected_receivers, st.session_state.df_c_working, df_v)
                     fig_reassign = generate_reassignment_map(
                         orphan_df, alloc, df_v, removed_name, selected_receivers,
@@ -1529,6 +1704,7 @@ def main():
                         'receivers': selected_receivers,
                         'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
                     }
+                    # --- FINE NUOVO ---
 
                     df_new = apply_reassignment(
                         st.session_state.df_c_working, removed_name, selected_receivers, df_v
@@ -1541,6 +1717,7 @@ def main():
                         'n_clients': n_orfani,
                         'timestamp': pd.Timestamp.now().strftime("%H:%M:%S")
                     })
+                    # Pulisci cache riassegnazione
                     st.session_state.pop(f"future_results_{removed_name}", None)
                     st.session_state.pop(f"last_selected_{removed_name}", None)
                     st.session_state.pending_removal = None
@@ -1555,6 +1732,9 @@ def main():
 
         st.stop()
 
+    # =============================================================================
+    # MAIN CONTENT: Matrice ABC
+    # =============================================================================
     if uploaded:
         st.divider()
         st.subheader("📊 Matrice Classificazione ABC & Frequenze")
@@ -1597,6 +1777,7 @@ def main():
         }
         st.session_state.min_vol = da_c
 
+        # Preview distribuzione
         try:
             df_preview = df_c.copy()
             df_preview[col_vol] = pd.to_numeric(df_preview[col_vol], errors='coerce').fillna(0)
@@ -1613,6 +1794,9 @@ def main():
             st.session_state.abc_updated = True
             st.rerun()
 
+    # =============================================================================
+    # LOGICA ESECUZIONE
+    # =============================================================================
     run_sim = False
     if st.session_state.get('trigger_auto_run', False):
         st.session_state.trigger_auto_run = False
@@ -1658,6 +1842,7 @@ def main():
                         st.session_state.current_df_v = df_v
                         st.success("✅ Calcolo completato!")
 
+                        # --- NUOVO: cattura stato iniziale se è la prima volta ---
                         if st.session_state.initial_result is None:
                             st.session_state.initial_result = res.copy()
                             st.session_state.initial_df_work = df_w.copy()
@@ -1668,6 +1853,9 @@ def main():
             except Exception as e:
                 st.error(f"❌ Errore: {e}")
 
+    # =============================================================================
+    # VISUALIZZAZIONE RISULTATI
+    # =============================================================================
     if st.session_state.current_result is not None:
         res = st.session_state.current_result
         df_w = st.session_state.current_df_work
@@ -1706,6 +1894,7 @@ def main():
         disp.columns = ['Venditore', 'Stato', 'Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D',
                         'Ore Visite', 'Ore Viaggio', 'Ore Totali', 'Sat %', 'Min/GG', 'Vis/GG', 'km/GG', 'Pernotti']
 
+        # Riga TOTALE
         total_row = pd.DataFrame([{
             'Venditore': 'TOTALE',
             'Stato': get_alert(disp['Sat %'].mean()),
@@ -1727,6 +1916,7 @@ def main():
         }])
         disp = pd.concat([disp, total_row], ignore_index=True)
 
+        # Formattazione valori
         disp_fmt = disp.copy()
         for col in ['Clienti', 'A', 'B', 'C', 'D', 'Volumi A-B-C', 'Volumi D']:
             disp_fmt[col] = disp_fmt[col].apply(lambda x: fmt_eu(x, 0))
@@ -1737,6 +1927,7 @@ def main():
         disp_fmt['km/GG'] = disp_fmt['km/GG'].apply(lambda x: fmt_eu(x, 1))
         disp_fmt['Pernotti'] = disp_fmt['Pernotti'].apply(lambda x: fmt_eu(x, 0))
 
+        # Genera HTML tabella con stile completo
         def get_sat_color(v):
             try:
                 clean = str(v).replace('%', '').replace('.', '').replace(',', '.')
@@ -1857,6 +2048,9 @@ def main():
             )
             st.plotly_chart(fig, use_container_width=True)
 
+        # =============================================================================
+        # NUOVO: EXPORT AVANZATO & REPORTISTICA
+        # =============================================================================
         st.divider()
         st.subheader("📦 Export Avanzato & Reportistica")
 
@@ -1884,6 +2078,7 @@ def main():
         with col_ex3:
             if st.button("🏁 Status Quo Finale + Export Excel", use_container_width=True, type="primary"):
                 with st.spinner("Generazione report finale..."):
+                    # Genera mappa finale
                     final_fig = build_territory_map(
                         st.session_state.current_df_work,
                         st.session_state.current_df_v,
@@ -1892,6 +2087,7 @@ def main():
                     )
                     st.session_state.final_fig = final_fig
 
+                    # Genera Excel
                     excel_buffer = generate_excel_report(
                         st.session_state.initial_result,
                         st.session_state.current_result,
@@ -1906,6 +2102,7 @@ def main():
                                         f"downsizing_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                         use_container_width=True)
+                        # Offri anche mappa finale
                         img_final = fig_to_png(final_fig)
                         if img_final:
                             st.download_button("📥 Scarica Mappa Finale PNG", img_final, "mappa_status_quo_finale.png", "image/png", use_container_width=True)
@@ -1921,6 +2118,9 @@ def main():
     else:
         st.info("📂 Carica Excel e clicca '🚀 Lancia Simulazione' per iniziare.")
 
+    # =============================================================================
+    # SALVATAGGIO STATO CHECKBOX PER RILEVAMENTO FUTURO
+    # =============================================================================
     if uploaded and not st.session_state.get('pending_removal'):
         st.session_state.rep_status_prev = {r: rep_status[r] for r in reps}
 
