@@ -1232,6 +1232,24 @@ def main():
             col_vol = 'volume_calcolato'
         else:
             col_vol = selected_vol_cols[0]
+
+        # --- TABELLA VOLUMI BRAND SIDEBAR ---
+        st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+        vol_rows = []
+        grand_total = 0.0
+        for c in selected_vol_cols:
+            tot = pd.to_numeric(df_c[c], errors='coerce').fillna(0).sum()
+            grand_total += tot
+            vol_rows.append([c, fmt_eu(tot, 0)])
+        vol_rows.append(['<b>TOTALE</b>', f"<b>{fmt_eu(grand_total, 0)}</b>"])
+        st.markdown(
+            "<style>.brand-table td,.brand-table th{padding:4px 8px;font-size:12px;text-align:center;}"
+            ".brand-table th{background:#333;color:#fff;border-bottom:1px solid #555;}"
+            ".brand-table td{border-bottom:1px solid #444;color:#fff;}"
+            ".brand-table tr:last-child td{background:#2e7d32;color:#fff;font-weight:bold;}</style>"
+            + render_html_table(['Brand', 'Volume'], vol_rows, "12px").replace('<table', '<table class="brand-table"'),
+            unsafe_allow_html=True
+        )
         dur_visita = st.slider("⏱️ Durata media visita (min)", 40, 150, 90, step=5)
         ore_gg = st.number_input("🕒 Ore lavorative/giorno", 6.0, 10.0, 8.0, step=0.5)
         gg_lavoro = st.number_input("📅 Giorni lavorativi/anno", 180, 260, 220, step=5)
